@@ -1,4 +1,6 @@
 /target
+/bin
+.si
 .env
 *.swp
 .DS_Store

@@ -124,6 +124,20 @@ fn read_optional_file(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// Optional host-environment block from `cwd/.si/config/host.md`.
+///
+/// Injected into the system prompt between the Silicon intro and the
+/// "You are chatting with…" line. Missing or empty files yield `None`.
+pub fn load_host_config(cwd: &Path) -> Option<String> {
+    let raw = read_optional_file(&cwd.join(".si").join("config").join("host.md"))?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Resolve model id from env (`SILICON_MODEL` or `OXYGEN_MODEL`) or default.
 pub fn resolve_model() -> String {
     for key in ["SILICON_MODEL", "OXYGEN_MODEL"] {
@@ -268,35 +282,20 @@ impl Agent {
     }
 
     fn system_prompt(&self) -> String {
+        let host = load_host_config(&self.cwd)
+            .map(|s| format!("\n{s}\n"))
+            .unwrap_or_default();
         format!(
             r#"
 {}
 You are running in Silicon, an agentic development environment.
 Silicon is a small hobby project built by Randall.
 Silicon may have some rough edges.
-
-## Host Tools
-
-`example`
-
-`brew`, `wget`, `curl`
-`git`, `gh`, `make`
-`python3`, `uv`, `gpg`
-`rg`, `fd`, `fzf`
-`tree`, `delta`, `yq`
-`jq`, `bat`, `eza`
-`ruff`
-
-## Host Languages
-
-Go 1.26.5
-Rust/Cargo 1.97.1
-Node/npm (Node v22.23.2, npm 10.9.8)
-Python (System `python3` 3.9.6; Homebrew `python@3.14`)
-
+{}
 You are chatting with: Randall
 The current working directory is: {}"#,
             resolve_model_intro(),
+            host,
             self.cwd.display()
         )
     }
@@ -879,6 +878,49 @@ mod tests {
             std::fs::create_dir_all(p).unwrap();
         }
         std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn load_host_config_reads_si_config_host_md() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            &dir.path().join(".si").join("config").join("host.md"),
+            "\n## Host Tools\n\n`rg`, `fd`\n\n",
+        );
+        let got = load_host_config(dir.path()).unwrap();
+        assert_eq!(got, "## Host Tools\n\n`rg`, `fd`");
+        assert!(load_host_config(tempfile::tempdir().unwrap().path()).is_none());
+    }
+
+    #[test]
+    fn system_prompt_includes_host_config_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            &dir.path().join(".si").join("config").join("host.md"),
+            "## Host Tools\n\n`rg`\n\n## Host Languages\n\nRust 1.97\n",
+        );
+        let a = Agent::new("", dir.path(), "", "");
+        let sp = a.system_prompt();
+        assert!(sp.contains("rough edges."), "{sp}");
+        assert!(sp.contains("## Host Tools") && sp.contains("`rg`"), "{sp}");
+        assert!(sp.contains("## Host Languages") && sp.contains("Rust 1.97"), "{sp}");
+        assert!(sp.contains("You are chatting with: Randall"), "{sp}");
+        // Host block sits between intro and chatting-with line.
+        let rough = sp.find("rough edges.").unwrap();
+        let host = sp.find("## Host Tools").unwrap();
+        let chat = sp.find("You are chatting with:").unwrap();
+        assert!(rough < host && host < chat, "{sp}");
+    }
+
+    #[test]
+    fn system_prompt_omits_host_section_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Agent::new("", dir.path(), "", "");
+        let sp = a.system_prompt();
+        assert!(sp.contains("rough edges."), "{sp}");
+        assert!(!sp.contains("## Host Tools"), "{sp}");
+        assert!(!sp.contains("## Host Languages"), "{sp}");
+        assert!(sp.contains("You are chatting with: Randall"), "{sp}");
     }
 
     #[test]

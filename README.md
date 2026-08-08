@@ -55,6 +55,9 @@ the project you want the agent to work on.
 | `SILICON_MODEL_INTRO` | Model identity line for the system prompt (`OXYGEN_MODEL_INTRO` also accepted) | `You are Si, a coding agent.` |
 | `SILICON_EFFORT`      | Thinking effort: `low`, `medium`, `high`                 | `medium`           |
 
+Host environment notes for the system prompt (tools, language versions, etc.)
+are optional and loaded at runtime from `.si/config/host.md` when present.
+
 ## Usage
 
 - Type a prompt and press `Enter` to send it.

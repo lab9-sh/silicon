@@ -13,7 +13,7 @@ pub use events::{
 };
 pub use turn::{
     apply_budget_continue, assemble_user_message_texts, context_tokens, decide_budget_pause,
-    decide_large_tool_result, first_turn_context_blocks, first_turn_user_texts, resolve_effort,
-    resolve_model, resolve_model_intro, Agent, CompleteFn, DEFAULT_BUDGET, DEFAULT_EFFORT,
-    DEFAULT_MAX_TOKENS, DEFAULT_MODEL, DEFAULT_MODEL_INTRO, BUDGET_INCREMENT,
+    decide_large_tool_result, first_turn_context_blocks, first_turn_user_texts, load_host_config,
+    resolve_effort, resolve_model, resolve_model_intro, Agent, CompleteFn, DEFAULT_BUDGET,
+    DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, DEFAULT_MODEL_INTRO, BUDGET_INCREMENT,
 };
