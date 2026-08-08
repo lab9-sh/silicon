@@ -5,8 +5,8 @@ mod events;
 mod turn;
 
 pub use archive::{
-    append_memory, is_archive_command, one_sentence, sanitize_dir_name, write_archive_layout,
-    ArchiveResult,
+    append_memory, format_session_settings_log, format_system_prompt_log, is_archive_command,
+    one_sentence, sanitize_dir_name, write_archive_layout, ArchiveResult, SessionSettings,
 };
 pub use events::{
     AgentEvent, BudgetDecision, LargeResultDecision, LargeToolResultReply, ToolRecord,

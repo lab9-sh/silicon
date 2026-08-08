@@ -18,8 +18,10 @@ inspect and modify a codebase, and presents the conversation in a
 - **Large tool-result guardrail** — output estimated above ~50k tokens pauses
   for approve (forward raw) or deny (forward your guidance).
 - **Session archiving** — `/archive` summarizes the session, appends to
-  `.si/memory.md` (`yyyy-mm-dd hh:mm` prefix), and writes tool logs under
-  `.si/logs/{datetime}-{summary}/tool/{id}.md`.
+  `.si/memory.md` (`yyyy-mm-dd hh:mm` prefix), and writes under
+  `.si/logs/{datetime}-{summary}/`: tool logs (`tool/{id}.md`), the system
+  prompt (`system-prompt.md`), and session settings (`session.md`: model,
+  model intro, thinking effort).
 - **`.env` support** — loads `ANTHROPIC_API_KEY` from a local `.env` when unset.
 
 ## Requirements
@@ -66,7 +68,8 @@ are optional and loaded at runtime from `.si/config/host.md` when present.
 - While running: `Ctrl+C` cancels the turn; again within 2s quits. Idle: quits.
 - Budget pause: `c` continues (+100k), `s` stops.
 - Large tool result: `Ctrl+Y` approves; type guidance + `Enter` denies.
-- `/archive` (idle) summarizes into `.si/memory.md` and dumps tool logs.
+- `/archive` (idle) summarizes into `.si/memory.md` and dumps tool logs plus
+  system prompt and session settings.
 
 ## Project layout
 

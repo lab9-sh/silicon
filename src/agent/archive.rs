@@ -59,12 +59,30 @@ pub fn format_memory_line(now: SystemTime, sentence: &str) -> String {
     )
 }
 
-/// Create `cwd/.si/logs/{datetime}-{sanitized}/` and write `tool/{id}.md` files.
+/// Session settings captured at `/archive` time.
+#[derive(Debug, Clone)]
+pub struct SessionSettings {
+    pub model: String,
+    pub model_intro: String,
+    pub thinking_effort: String,
+}
+
+/// Create `cwd/.si/logs/{datetime}-{sanitized}/` with tool logs, system prompt,
+/// and session settings.
+///
+/// Layout:
+/// - `tool/{id}.md` — each tool call
+/// - `system-prompt.md` — system prompt used for the session (or first user
+///   message if no system prompt is available)
+/// - `session.md` — model, model intro, and thinking effort
 pub fn write_archive_layout(
     cwd: &Path,
     now: SystemTime,
     summary: &str,
     records: &[ToolRecord],
+    system_prompt: Option<&str>,
+    first_user_message: Option<&str>,
+    settings: &SessionSettings,
 ) -> Result<PathBuf, String> {
     let mut safe = sanitize_dir_name(summary);
     if safe.is_empty() {
@@ -87,7 +105,48 @@ pub fn write_archive_layout(
         fs::write(&path, body.as_bytes()).map_err(|e| e.to_string())?;
     }
 
+    let system_body = format_system_prompt_log(system_prompt, first_user_message);
+    fs::write(log_dir.join("system-prompt.md"), system_body.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    let session_body = format_session_settings_log(settings);
+    fs::write(log_dir.join("session.md"), session_body.as_bytes()).map_err(|e| e.to_string())?;
+
     Ok(fs::canonicalize(&log_dir).unwrap_or(log_dir))
+}
+
+/// Prefer the system prompt; fall back to the first user message when the
+/// system prompt was not stored separately (or is empty).
+pub fn format_system_prompt_log(
+    system_prompt: Option<&str>,
+    first_user_message: Option<&str>,
+) -> String {
+    let system = system_prompt.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(sp) = system {
+        return format!("# System prompt\n\n{sp}\n");
+    }
+    let first = first_user_message.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(msg) = first {
+        return format!(
+            "# First user message\n\n\
+             _(System prompt was not stored separately for this session.)_\n\n\
+             {msg}\n"
+        );
+    }
+    "# System prompt\n\n_(empty session — no system prompt or user message.)_\n".into()
+}
+
+/// Markdown body for `session.md`.
+pub fn format_session_settings_log(settings: &SessionSettings) -> String {
+    format!(
+        "# Session settings\n\n\
+         - model: {model}\n\
+         - model_intro: {intro}\n\
+         - thinking_effort: {effort}\n",
+        model = settings.model,
+        intro = settings.model_intro,
+        effort = settings.thinking_effort,
+    )
 }
 
 /// Filesystem-safe directory name segment from a summary sentence.
@@ -383,8 +442,22 @@ mod tests {
                 is_error: true,
             },
         ];
+        let settings = SessionSettings {
+            model: "claude-sonnet-5".into(),
+            model_intro: "You are Si, a coding agent.".into(),
+            thinking_effort: "medium".into(),
+        };
 
-        let log_dir = write_archive_layout(dir.path(), now, summary, &records).unwrap();
+        let log_dir = write_archive_layout(
+            dir.path(),
+            now,
+            summary,
+            &records,
+            Some("You are running in Silicon."),
+            Some("list the files"),
+            &settings,
+        )
+        .unwrap();
         let base = log_dir.file_name().unwrap().to_string_lossy();
         assert!(
             base.starts_with("20260807-150405-"),
@@ -407,6 +480,54 @@ mod tests {
             assert!(body.contains(&rec.response), "{body}");
             assert!(body.contains(&rec.name), "{body}");
         }
+
+        let system_body = fs::read_to_string(log_dir.join("system-prompt.md")).unwrap();
+        assert!(system_body.contains("# System prompt"), "{system_body}");
+        assert!(
+            system_body.contains("You are running in Silicon."),
+            "{system_body}"
+        );
+
+        let session_body = fs::read_to_string(log_dir.join("session.md")).unwrap();
+        assert!(session_body.contains("model: claude-sonnet-5"), "{session_body}");
+        assert!(
+            session_body.contains("model_intro: You are Si, a coding agent."),
+            "{session_body}"
+        );
+        assert!(
+            session_body.contains("thinking_effort: medium"),
+            "{session_body}"
+        );
+    }
+
+    #[test]
+    fn format_system_prompt_log_falls_back_to_first_user() {
+        let body = format_system_prompt_log(None, Some("hello world"));
+        assert!(body.contains("# First user message"), "{body}");
+        assert!(body.contains("hello world"), "{body}");
+        assert!(
+            body.contains("System prompt was not stored separately"),
+            "{body}"
+        );
+
+        let empty = format_system_prompt_log(Some("  "), None);
+        assert!(empty.contains("empty session"), "{empty}");
+    }
+
+    #[test]
+    fn format_session_settings_log_shape() {
+        let body = format_session_settings_log(&SessionSettings {
+            model: "m".into(),
+            model_intro: "intro line".into(),
+            thinking_effort: "high".into(),
+        });
+        assert_eq!(
+            body,
+            "# Session settings\n\n\
+             - model: m\n\
+             - model_intro: intro line\n\
+             - thinking_effort: high\n"
+        );
     }
 
     #[test]

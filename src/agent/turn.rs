@@ -14,7 +14,7 @@ use hydrogen::{
 use tokio::sync::{mpsc, oneshot};
 
 use super::archive::{
-    append_memory, one_sentence, write_archive_layout, ArchiveResult,
+    append_memory, one_sentence, write_archive_layout, ArchiveResult, SessionSettings,
 };
 use super::events::{
     AgentEvent, BudgetDecision, BudgetPauseEvent, LargeResultDecision, LargeToolResultEvent,
@@ -730,7 +730,7 @@ The current working directory is: {}"#,
         }
     }
 
-    /// Archive: summarize, append memory, write tool logs.
+    /// Archive: summarize, append memory, write tool logs + session metadata.
     pub async fn archive(&mut self) -> Result<ArchiveResult, String> {
         let summary = self.summarize_session().await?;
         let summary = one_sentence(&summary);
@@ -739,12 +739,49 @@ The current working directory is: {}"#,
         }
         let now = SystemTime::now();
         let mem_path = append_memory(&self.cwd, now, &summary)?;
-        let log_dir = write_archive_layout(&self.cwd, now, &summary, &self.tool_records)?;
+        let system = self.system_prompt();
+        let first_user = self.first_user_message_text();
+        let settings = SessionSettings {
+            model: self.model.clone(),
+            model_intro: resolve_model_intro(),
+            thinking_effort: self.effort.clone(),
+        };
+        let log_dir = write_archive_layout(
+            &self.cwd,
+            now,
+            &summary,
+            &self.tool_records,
+            Some(system.as_str()),
+            first_user.as_deref(),
+            &settings,
+        )?;
         Ok(ArchiveResult {
             summary,
             log_dir,
             memory: mem_path,
         })
+    }
+
+    /// Plain text of the first user message in the conversation, if any.
+    fn first_user_message_text(&self) -> Option<String> {
+        for msg in self.conv.messages() {
+            if msg.role != Role::User {
+                continue;
+            }
+            let mut parts = Vec::new();
+            for block in &msg.content {
+                if let ContentBlock::Text(t) = block {
+                    let text = t.text.trim();
+                    if !text.is_empty() {
+                        parts.push(text.to_string());
+                    }
+                }
+            }
+            if !parts.is_empty() {
+                return Some(parts.join("\n\n"));
+            }
+        }
+        None
     }
 
     async fn summarize_session(&mut self) -> Result<String, String> {
@@ -1218,6 +1255,21 @@ mod tests {
         let tool_path = res.log_dir.join("tool").join("call_1.md");
         let body = std::fs::read_to_string(&tool_path).unwrap();
         assert!(body.contains(r#"{"command":"echo hi"}"#) && body.contains("hi"), "{body}");
+
+        let system_body = std::fs::read_to_string(res.log_dir.join("system-prompt.md")).unwrap();
+        assert!(system_body.contains("# System prompt"), "{system_body}");
+        assert!(
+            system_body.contains("You are running in Silicon"),
+            "{system_body}"
+        );
+
+        let session_body = std::fs::read_to_string(res.log_dir.join("session.md")).unwrap();
+        assert!(session_body.contains("model: test-model"), "{session_body}");
+        assert!(
+            session_body.contains("thinking_effort: medium"),
+            "{session_body}"
+        );
+        assert!(session_body.contains("model_intro:"), "{session_body}");
 
         let base = res.log_dir.file_name().unwrap().to_string_lossy();
         let parts: Vec<_> = base.splitn(3, '-').collect();
