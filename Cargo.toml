@@ -1,0 +1,31 @@
+[package]
+name = "silicon"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal coding agent — Rust port of Oxygen (ratatui + hydrogen)"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/lab9-sh/silicon"
+publish = false
+
+[[bin]]
+name = "silicon"
+path = "src/main.rs"
+
+[lib]
+name = "silicon"
+path = "src/lib.rs"
+
+[dependencies]
+crossterm = "0.28"
+dotenvy = "0.15"
+futures-util = "0.3"
+hydrogen = { path = "../hydrogen" }
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util"] }
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
