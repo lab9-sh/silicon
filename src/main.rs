@@ -17,7 +17,17 @@ fn run() -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
 
     // Load .env for keys not already set (dotenvy does not override).
-    let _ = dotenvy::from_path(cwd.join(".env"));
+    // Multi-word values must be quoted (dotenvy rejects `KEY=foo bar`).
+    let env_path = cwd.join(".env");
+    if env_path.is_file() {
+        dotenvy::from_path(&env_path).map_err(|e| {
+            format!(
+                "failed to load {}: {e}\n\
+                 Tip: quote multi-word values, e.g. SILICON_MODEL_INTRO=\"You are …\"",
+                env_path.display()
+            )
+        })?;
+    }
 
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .unwrap_or_default()

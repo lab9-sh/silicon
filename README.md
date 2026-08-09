@@ -58,6 +58,10 @@ the project you want the agent to work on.
 | `SILICON_MODEL_INTRO` | Model identity line for the system prompt                | `You are Si, a coding agent.` |
 | `SILICON_EFFORT`      | Thinking effort: `low`, `medium`, `high`                 | `medium`           |
 
+Put these in the project `.env` (or export them). **Multi-word values must be
+quoted** — dotenvy rejects unquoted spaces, e.g.
+`SILICON_MODEL_INTRO="You are Claude, a large language model created by Anthropic."`.
+
 Host environment notes for the system prompt (tools, language versions, etc.)
 are optional and loaded at runtime from `.si/config/host.md` when present.
 
