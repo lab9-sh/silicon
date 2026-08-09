@@ -11,19 +11,15 @@ pub const DEFAULT_MAX_TOKENS: u32 = 128_000;
 pub const DEFAULT_MODEL: &str = "claude-sonnet-5";
 pub const DEFAULT_EFFORT: &str = "medium";
 
-/// Default model identity line when `SILICON_MODEL_INTRO` / `OXYGEN_MODEL_INTRO`
-/// are unset.
+/// Default model identity line when `SILICON_MODEL_INTRO` is unset.
 pub const DEFAULT_MODEL_INTRO: &str = "You are Si, a coding agent.";
 
-/// Walk env keys in order; return first non-empty trimmed value that passes
-/// `validate`, else `default`.
-fn env_or(keys: &[&str], default: &str, validate: impl Fn(&str) -> Option<String>) -> String {
-    for key in keys {
-        if let Ok(raw) = std::env::var(key) {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
+/// Read `key` from the environment; return a non-empty trimmed value that
+/// passes `validate`, else `default`.
+fn env_or(key: &str, default: &str, validate: impl Fn(&str) -> Option<String>) -> String {
+    if let Ok(raw) = std::env::var(key) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
             if let Some(v) = validate(trimmed) {
                 return v;
             }
@@ -32,41 +28,30 @@ fn env_or(keys: &[&str], default: &str, validate: impl Fn(&str) -> Option<String
     default.into()
 }
 
-/// Resolve model id from env (`SILICON_MODEL` or `OXYGEN_MODEL`) or default.
+/// Resolve model id from env (`SILICON_MODEL`) or default.
 pub fn resolve_model() -> String {
-    env_or(
-        &["SILICON_MODEL", "OXYGEN_MODEL"],
-        DEFAULT_MODEL,
-        |s| Some(s.to_string()),
-    )
+    env_or("SILICON_MODEL", DEFAULT_MODEL, |s| Some(s.to_string()))
 }
 
-/// Resolve model identity intro from env (`SILICON_MODEL_INTRO` or
-/// `OXYGEN_MODEL_INTRO`) or default.
+/// Resolve model identity intro from env (`SILICON_MODEL_INTRO`) or default.
 ///
 /// Example override: `You are Claude, a large language model created by Anthropic.`
 pub fn resolve_model_intro() -> String {
-    env_or(
-        &["SILICON_MODEL_INTRO", "OXYGEN_MODEL_INTRO"],
-        DEFAULT_MODEL_INTRO,
-        |s| Some(s.to_string()),
-    )
+    env_or("SILICON_MODEL_INTRO", DEFAULT_MODEL_INTRO, |s| {
+        Some(s.to_string())
+    })
 }
 
-/// Resolve effort from env (`SILICON_EFFORT` or `OXYGEN_EFFORT`) or default.
+/// Resolve effort from env (`SILICON_EFFORT`) or default.
 pub fn resolve_effort() -> String {
-    env_or(
-        &["SILICON_EFFORT", "OXYGEN_EFFORT"],
-        DEFAULT_EFFORT,
-        |s| {
-            let e = s.to_lowercase();
-            if matches!(e.as_str(), "low" | "medium" | "high") {
-                Some(e)
-            } else {
-                None
-            }
-        },
-    )
+    env_or("SILICON_EFFORT", DEFAULT_EFFORT, |s| {
+        let e = s.to_lowercase();
+        if matches!(e.as_str(), "low" | "medium" | "high") {
+            Some(e)
+        } else {
+            None
+        }
+    })
 }
 
 /// Optional host-environment block from `cwd/.si/config/host.md`.
@@ -112,10 +97,7 @@ mod tests {
 
     #[test]
     fn resolve_model_defaults_when_unset() {
-        // Does not depend on ambient env for the default path when both keys
-        // are empty after trim — we only assert the constants and the helper
-        // accept empty-reject via direct env_or semantics through public API
-        // when vars are unset.
+        // Smoke-call resolvers (ambient env may override) and assert defaults.
         let _ = resolve_model();
         let _ = resolve_model_intro();
         let _ = resolve_effort();

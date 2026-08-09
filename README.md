@@ -54,8 +54,8 @@ the project you want the agent to work on.
 | Env var               | Description                                              | Default            |
 |-----------------------|----------------------------------------------------------|--------------------|
 | `ANTHROPIC_API_KEY`   | Anthropic API key (required)                             | —                  |
-| `SILICON_MODEL`       | Anthropic model ID (`OXYGEN_MODEL` also accepted)        | `claude-sonnet-5`  |
-| `SILICON_MODEL_INTRO` | Model identity line for the system prompt (`OXYGEN_MODEL_INTRO` also accepted) | `You are Si, a coding agent.` |
+| `SILICON_MODEL`       | Anthropic model ID                                       | `claude-sonnet-5`  |
+| `SILICON_MODEL_INTRO` | Model identity line for the system prompt                | `You are Si, a coding agent.` |
 | `SILICON_EFFORT`      | Thinking effort: `low`, `medium`, `high`                 | `medium`           |
 
 Host environment notes for the system prompt (tools, language versions, etc.)
