@@ -1,44 +1,34 @@
-//! First-turn assembly, tool dispatch, budget/large-result decisions,
-//! and the hydrogen-backed streaming agent loop.
+//! Agent struct, tool prepare/execute, and the streaming turn loop.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Instant;
 
 use futures_util::StreamExt;
 use hydrogen::types::ToolUseBlock;
 use hydrogen::{
-    AnthropicConfig, Client, ContentBlock, Conversation, Event, RequestOptions, Response, Role,
-    StopReason, ThinkingEffort, ToolOutput, Usage,
+    AnthropicConfig, Client, ContentBlock, Conversation, Event, RequestOptions, Response,
+    StopReason, ThinkingEffort, ToolOutput,
 };
 use tokio::sync::{mpsc, oneshot};
 
-use super::archive::{
-    append_memory, one_sentence, write_archive_layout, ArchiveResult, SessionSettings,
+use super::config::{
+    load_host_config, resolve_model_intro, DEFAULT_BUDGET, DEFAULT_EFFORT, DEFAULT_MAX_TOKENS,
+    DEFAULT_MODEL,
 };
+use super::context::assemble_user_message_texts;
 use super::events::{
     AgentEvent, BudgetDecision, BudgetPauseEvent, LargeResultDecision, LargeToolResultEvent,
     LargeToolResultReply, TextDeltaEvent, ToolRecord, ToolResultEvent, ToolStartEvent, UsageEvent,
 };
-use crate::tools::{
-    estimate_tokens, run_bash, run_bash_cancellable, run_edit, session_tools, BashInput,
-    BashOutcome, EditInput, LARGE_TOOL_RESULT_TOKENS,
+use super::policy::{
+    apply_budget_continue, context_tokens, decide_budget_pause, decide_large_tool_result,
+    is_large_tool_result,
 };
-
-pub const DEFAULT_BUDGET: u64 = 200_000;
-pub const BUDGET_INCREMENT: u64 = 100_000;
-pub const DEFAULT_MAX_TOKENS: u32 = 128_000;
-pub const DEFAULT_MODEL: &str = "claude-sonnet-5";
-pub const DEFAULT_EFFORT: &str = "medium";
-
-const ARCHIVE_SUMMARY_SYSTEM: &str = "You summarize coding-agent sessions in exactly one sentence.\n\
-Reply with a single plain sentence only — no quotes, no bullet points, no preamble.";
-
-const ARCHIVE_SUMMARY_INSTRUCTION: &str = "Summarize this coding-agent session in exactly one sentence, written for your future self as a memory note: what was asked, what you changed, and the outcome.\n\
-Reply with a single plain sentence only — no quotes, no bullet points, no preamble. Do not call any tools.";
-
-const ARCHIVE_SUMMARY_MAX_TOKENS: u32 = 4096;
-const CACHE_FRESH_WINDOW: Duration = Duration::from_secs(4 * 60);
+use crate::tools::{
+    estimate_tokens, run_bash_cancellable, run_edit, session_tools, BashInput, BashOutcome,
+    EditInput,
+};
 
 /// One-shot model completion used by Archive. Tests inject a stub.
 pub type CompleteFn = Arc<dyn Fn(String, String) -> Result<String, String> + Send + Sync>;
@@ -50,162 +40,18 @@ pub enum PreparedTool {
     Edit { input: EditInput },
 }
 
-/// Total context-window tokens from a hydrogen usage report (matches Oxygen).
-pub fn context_tokens(u: &Usage) -> u64 {
-    u.total_input_tokens() as u64 + u.output_tokens as u64
-}
-
-/// Whether the agent should pause for a budget decision.
-pub fn decide_budget_pause(ctx_tokens: u64, budget: u64) -> bool {
-    ctx_tokens >= budget
-}
-
-/// Apply the user's budget choice. `continue_turn == true` → +100k budget.
-pub fn apply_budget_continue(budget: u64, continue_turn: bool) -> BudgetDecision {
-    if continue_turn {
-        BudgetDecision::Continue {
-            new_budget: budget + BUDGET_INCREMENT,
-        }
-    } else {
-        BudgetDecision::Stop
-    }
-}
-
-/// Whether a tool result should pause for large-result approval.
-pub fn is_large_tool_result(tokens: usize) -> bool {
-    tokens > LARGE_TOOL_RESULT_TOKENS
-}
-
-/// Map the user's large-result reply into a pure decision.
-pub fn decide_large_tool_result(reply: LargeToolResultReply) -> LargeResultDecision {
-    if reply.approve {
-        LargeResultDecision::Approve
-    } else {
-        LargeResultDecision::Deny {
-            message: reply.message,
-        }
-    }
-}
-
-/// Optional first-turn context blocks: README.md then `.si/memory.md`.
-pub fn first_turn_context_blocks(cwd: &Path) -> Vec<String> {
-    let mut blocks = Vec::new();
-    if let Some(readme) = read_optional_file(&cwd.join("README.md")) {
-        blocks.push(format!(
-            "Here is the project's README.md for context:\n\n{readme}"
-        ));
-    }
-    if let Some(mem) = read_optional_file(&cwd.join(".si").join("memory.md")) {
-        blocks.push(format!("Here is memory from prior sessions:\n\n{mem}"));
-    }
-    blocks
-}
-
-/// Shipped context-assembly path used by `RunTurn`.
-///
-/// When `history_len == 0` (first turn): README then memory (each if present)
-/// followed by `prompt`. When `history_len > 0`: only the prompt.
-pub fn assemble_user_message_texts(cwd: &Path, history_len: usize, prompt: &str) -> Vec<String> {
-    if history_len == 0 {
-        let mut parts = first_turn_context_blocks(cwd);
-        parts.push(prompt.to_string());
-        parts
-    } else {
-        vec![prompt.to_string()]
-    }
-}
-
-/// Full ordered text parts of the first user message.
-pub fn first_turn_user_texts(cwd: &Path, prompt: &str) -> Vec<String> {
-    assemble_user_message_texts(cwd, 0, prompt)
-}
-
-fn read_optional_file(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
-}
-
-/// Optional host-environment block from `cwd/.si/config/host.md`.
-///
-/// Injected into the system prompt between the Silicon intro and the
-/// "You are chatting with…" line. Missing or empty files yield `None`.
-pub fn load_host_config(cwd: &Path) -> Option<String> {
-    let raw = read_optional_file(&cwd.join(".si").join("config").join("host.md"))?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-/// Resolve model id from env (`SILICON_MODEL` or `OXYGEN_MODEL`) or default.
-pub fn resolve_model() -> String {
-    for key in ["SILICON_MODEL", "OXYGEN_MODEL"] {
-        if let Ok(m) = std::env::var(key) {
-            let m = m.trim().to_string();
-            if !m.is_empty() {
-                return m;
-            }
-        }
-    }
-    DEFAULT_MODEL.into()
-}
-
-/// Default model identity line when `SILICON_MODEL_INTRO` / `OXYGEN_MODEL_INTRO`
-/// are unset.
-pub const DEFAULT_MODEL_INTRO: &str = "You are Si, a coding agent.";
-
-/// Resolve model identity intro from env (`SILICON_MODEL_INTRO` or
-/// `OXYGEN_MODEL_INTRO`) or default.
-///
-/// Example override: `You are Claude, a large language model created by Anthropic.`
-pub fn resolve_model_intro() -> String {
-    for key in ["SILICON_MODEL_INTRO", "OXYGEN_MODEL_INTRO"] {
-        if let Ok(s) = std::env::var(key) {
-            let s = s.trim().to_string();
-            if !s.is_empty() {
-                return s;
-            }
-        }
-    }
-    DEFAULT_MODEL_INTRO.into()
-}
-
-/// Resolve effort from env (`SILICON_EFFORT` or `OXYGEN_EFFORT`) or default.
-pub fn resolve_effort() -> String {
-    for key in ["SILICON_EFFORT", "OXYGEN_EFFORT"] {
-        if let Ok(e) = std::env::var(key) {
-            let e = e.trim().to_lowercase();
-            if matches!(e.as_str(), "low" | "medium" | "high") {
-                return e;
-            }
-        }
-    }
-    DEFAULT_EFFORT.into()
-}
-
-fn thinking_effort(s: &str) -> ThinkingEffort {
-    match s.trim().to_lowercase().as_str() {
-        "low" => ThinkingEffort::Low,
-        "high" => ThinkingEffort::High,
-        _ => ThinkingEffort::Medium,
-    }
-}
-
 /// Coding agent driven by hydrogen (Anthropic).
 pub struct Agent {
-    client: Client,
-    model: String,
-    max_tokens: u32,
-    effort: String,
-    cwd: PathBuf,
-    conv: Conversation,
-    budget: u64,
-    tool_records: Vec<ToolRecord>,
-    last_request_at: Option<Instant>,
-    complete_fn: Option<CompleteFn>,
-    /// Optional transcript texts for compact summary (when not using live conv).
-    session_notes: Vec<String>,
+    pub(crate) client: Client,
+    pub(crate) model: String,
+    pub(crate) max_tokens: u32,
+    pub(crate) effort: String,
+    pub(crate) cwd: PathBuf,
+    pub(crate) conv: Conversation,
+    pub(crate) budget: u64,
+    pub(crate) tool_records: Vec<ToolRecord>,
+    pub(crate) last_request_at: Option<Instant>,
+    pub(crate) complete_fn: Option<CompleteFn>,
 }
 
 impl Agent {
@@ -235,7 +81,6 @@ impl Agent {
             tool_records: Vec::new(),
             last_request_at: None,
             complete_fn: None,
-            session_notes: Vec::new(),
         }
     }
 
@@ -258,11 +103,6 @@ impl Agent {
         self.conv.messages().len()
     }
 
-    /// Override archive completion (tests). Pass `None` to restore live API.
-    pub fn set_complete_fn(&mut self, fn_: Option<CompleteFn>) {
-        self.complete_fn = fn_;
-    }
-
     /// Record a tool call (tests / internal).
     pub fn record_tool(
         &mut self,
@@ -281,7 +121,7 @@ impl Agent {
         });
     }
 
-    fn system_prompt(&self) -> String {
+    pub(crate) fn system_prompt(&self) -> String {
         let host = load_host_config(&self.cwd)
             .map(|s| format!("\n{s}\n"))
             .unwrap_or_default();
@@ -300,7 +140,7 @@ The current working directory is: {}"#,
         )
     }
 
-    fn request_options(&self, max_tokens: u32) -> RequestOptions {
+    pub(crate) fn request_options(&self, max_tokens: u32) -> RequestOptions {
         RequestOptions {
             model: self.model.clone(),
             system: Some(self.system_prompt()),
@@ -331,41 +171,9 @@ The current working directory is: {}"#,
         }
     }
 
-    /// Decode a tool call and return (display, runner). Errors become tool results.
-    /// Runner is for tests; the turn loop uses [`Self::prepare_tool`] + execute.
-    pub fn dispatch_tool(
-        &self,
-        name: &str,
-        raw: &str,
-    ) -> Result<(String, Box<dyn Fn() -> (String, bool) + Send>), String> {
-        let (display, prepared) = self.prepare_tool(name, raw)?;
-        let cwd = self.cwd.clone();
-        Ok((
-            display,
-            Box::new(move || match prepared {
-                PreparedTool::Bash { ref command } => {
-                    let rt = tokio::runtime::Handle::try_current();
-                    match rt {
-                        Ok(h) => {
-                            tokio::task::block_in_place(|| h.block_on(run_bash(&cwd, command)))
-                        }
-                        Err(_) => {
-                            let rt = tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                                .expect("runtime");
-                            rt.block_on(run_bash(&cwd, command))
-                        }
-                    }
-                }
-                PreparedTool::Edit { ref input } => run_edit(&cwd, input),
-            }),
-        ))
-    }
-
     /// Execute a prepared tool, racing bash against turn cancel.
     /// Returns `None` if the turn was cancelled mid-execution.
-    async fn execute_prepared(
+    pub(crate) async fn execute_prepared(
         &self,
         prepared: PreparedTool,
         cancel: &mut oneshot::Receiver<()>,
@@ -401,16 +209,10 @@ The current working directory is: {}"#,
         // Hydrogen accepts a single user text blob; join multi-block first turn.
         let user_text = parts.join("\n\n");
         self.conv.push_user(user_text);
-        self.session_notes.push(format!("user: {prompt}"));
 
         loop {
             if cancel.try_recv().is_ok() {
-                let _ = events
-                    .send(AgentEvent::TurnDone {
-                        err: None,
-                        cancelled: true,
-                    })
-                    .await;
+                emit_done(&events, None, true).await;
                 return;
             }
 
@@ -420,12 +222,7 @@ The current working directory is: {}"#,
             let stream = match self.client.stream(&self.conv, &opts).await {
                 Ok(s) => s,
                 Err(e) => {
-                    let _ = events
-                        .send(AgentEvent::TurnDone {
-                            err: Some(e.to_string()),
-                            cancelled: false,
-                        })
-                        .await;
+                    emit_done(&events, Some(e.to_string()), false).await;
                     return;
                 }
             };
@@ -436,10 +233,7 @@ The current working directory is: {}"#,
             loop {
                 tokio::select! {
                     _ = &mut cancel => {
-                        let _ = events.send(AgentEvent::TurnDone {
-                            err: None,
-                            cancelled: true,
-                        }).await;
+                        emit_done(&events, None, true).await;
                         return;
                     }
                     next = stream.next() => {
@@ -453,10 +247,7 @@ The current working directory is: {}"#,
                             }
                             Some(Ok(_)) => {}
                             Some(Err(e)) => {
-                                let _ = events.send(AgentEvent::TurnDone {
-                                    err: Some(e.to_string()),
-                                    cancelled: false,
-                                }).await;
+                                emit_done(&events, Some(e.to_string()), false).await;
                                 return;
                             }
                             None => break,
@@ -468,12 +259,12 @@ The current working directory is: {}"#,
             let resp = match final_resp {
                 Some(r) => r,
                 None => {
-                    let _ = events
-                        .send(AgentEvent::TurnDone {
-                            err: Some("stream ended without Done event".into()),
-                            cancelled: false,
-                        })
-                        .await;
+                    emit_done(
+                        &events,
+                        Some("stream ended without Done event".into()),
+                        false,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -506,21 +297,16 @@ The current working directory is: {}"#,
 
             match stop {
                 StopReason::EndTurn | StopReason::Refusal => {
-                    let _ = events
-                        .send(AgentEvent::TurnDone {
-                            err: None,
-                            cancelled: false,
-                        })
-                        .await;
+                    emit_done(&events, None, false).await;
                     return;
                 }
                 StopReason::MaxTokens => {
-                    let _ = events
-                        .send(AgentEvent::TurnDone {
-                            err: Some("stopped: max_tokens reached".into()),
-                            cancelled: false,
-                        })
-                        .await;
+                    emit_done(
+                        &events,
+                        Some("stopped: max_tokens reached".into()),
+                        false,
+                    )
+                    .await;
                     return;
                 }
                 StopReason::ToolUse => {
@@ -528,12 +314,7 @@ The current working directory is: {}"#,
                 }
                 StopReason::Other(s) => {
                     if tool_uses.is_empty() {
-                        let _ = events
-                            .send(AgentEvent::TurnDone {
-                                err: None,
-                                cancelled: false,
-                            })
-                            .await;
+                        emit_done(&events, None, false).await;
                         return;
                     }
                     let _ = s;
@@ -541,12 +322,7 @@ The current working directory is: {}"#,
             }
 
             if tool_uses.is_empty() {
-                let _ = events
-                    .send(AgentEvent::TurnDone {
-                        err: None,
-                        cancelled: false,
-                    })
-                    .await;
+                emit_done(&events, None, false).await;
                 return;
             }
 
@@ -564,11 +340,7 @@ The current working directory is: {}"#,
                     .await;
                 let cont = tokio::select! {
                     _ = &mut cancel => {
-                        self.append_cancelled_tools(&tool_uses, "cancelled by user");
-                        let _ = events.send(AgentEvent::TurnDone {
-                            err: None,
-                            cancelled: true,
-                        }).await;
+                        cancel_remaining(self, &tool_uses, "cancelled by user", &events).await;
                         return;
                     }
                     r = rx => r.unwrap_or(false),
@@ -579,12 +351,7 @@ The current working directory is: {}"#,
                             &tool_uses,
                             "cancelled: user stopped at context budget",
                         );
-                        let _ = events
-                            .send(AgentEvent::TurnDone {
-                                err: None,
-                                cancelled: false,
-                            })
-                            .await;
+                        emit_done(&events, None, false).await;
                         return;
                     }
                     BudgetDecision::Continue { new_budget } => {
@@ -606,13 +373,7 @@ The current working directory is: {}"#,
             for (idx, tu) in tool_uses.iter().enumerate() {
                 // Match Oxygen: honor cancel before each tool in the batch.
                 if cancel.try_recv().is_ok() {
-                    self.append_cancelled_tools(&tool_uses[idx..], "cancelled by user");
-                    let _ = events
-                        .send(AgentEvent::TurnDone {
-                            err: None,
-                            cancelled: true,
-                        })
-                        .await;
+                    cancel_remaining(self, &tool_uses[idx..], "cancelled by user", &events).await;
                     return;
                 }
 
@@ -644,13 +405,7 @@ The current working directory is: {}"#,
                 let Some((out, is_err)) = self.execute_prepared(prepared, &mut cancel).await
                 else {
                     // Cancelled mid-tool (e.g. long bash). Cancel this + remaining.
-                    self.append_cancelled_tools(&tool_uses[idx..], "cancelled by user");
-                    let _ = events
-                        .send(AgentEvent::TurnDone {
-                            err: None,
-                            cancelled: true,
-                        })
-                        .await;
+                    cancel_remaining(self, &tool_uses[idx..], "cancelled by user", &events).await;
                     return;
                 };
 
@@ -672,11 +427,7 @@ The current working directory is: {}"#,
                         .await;
                     let reply = tokio::select! {
                         _ = &mut cancel => {
-                            self.append_cancelled_tools(&tool_uses[idx..], "cancelled by user");
-                            let _ = events.send(AgentEvent::TurnDone {
-                                err: None,
-                                cancelled: true,
-                            }).await;
+                            cancel_remaining(self, &tool_uses[idx..], "cancelled by user", &events).await;
                             return;
                         }
                         r = rx => r.unwrap_or(LargeToolResultReply {
@@ -729,204 +480,43 @@ The current working directory is: {}"#,
                 .push_tool_result(&tu.id, ToolOutput::Error(reason.into()));
         }
     }
-
-    /// Archive: summarize, append memory, write tool logs + session metadata.
-    pub async fn archive(&mut self) -> Result<ArchiveResult, String> {
-        let summary = self.summarize_session().await?;
-        let summary = one_sentence(&summary);
-        if summary.is_empty() {
-            return Err("empty session summary from model".into());
-        }
-        let now = SystemTime::now();
-        let mem_path = append_memory(&self.cwd, now, &summary)?;
-        let system = self.system_prompt();
-        let first_user = self.first_user_message_text();
-        let settings = SessionSettings {
-            model: self.model.clone(),
-            model_intro: resolve_model_intro(),
-            thinking_effort: self.effort.clone(),
-        };
-        let log_dir = write_archive_layout(
-            &self.cwd,
-            now,
-            &summary,
-            &self.tool_records,
-            Some(system.as_str()),
-            first_user.as_deref(),
-            &settings,
-        )?;
-        Ok(ArchiveResult {
-            summary,
-            log_dir,
-            memory: mem_path,
-        })
-    }
-
-    /// Plain text of the first user message in the conversation, if any.
-    fn first_user_message_text(&self) -> Option<String> {
-        for msg in self.conv.messages() {
-            if msg.role != Role::User {
-                continue;
-            }
-            let mut parts = Vec::new();
-            for block in &msg.content {
-                if let ContentBlock::Text(t) = block {
-                    let text = t.text.trim();
-                    if !text.is_empty() {
-                        parts.push(text.to_string());
-                    }
-                }
-            }
-            if !parts.is_empty() {
-                return Some(parts.join("\n\n"));
-            }
-        }
-        None
-    }
-
-    async fn summarize_session(&mut self) -> Result<String, String> {
-        if self.can_summarize_from_history() {
-            match self.summarize_from_history().await {
-                Ok(s) if !s.trim().is_empty() => return Ok(s),
-                Ok(_) => {}
-                Err(_) => {}
-            }
-        }
-        self.summarize_compact().await
-    }
-
-    fn can_summarize_from_history(&self) -> bool {
-        if self.complete_fn.is_some() || self.conv.messages().is_empty() {
-            return false;
-        }
-        match self.last_request_at {
-            Some(t) => t.elapsed() < CACHE_FRESH_WINDOW,
-            None => false,
-        }
-    }
-
-    async fn summarize_from_history(&mut self) -> Result<String, String> {
-        // Clone conversation, append instruction, send non-streaming.
-        let mut conv = self.conv.clone();
-        conv.push_user(ARCHIVE_SUMMARY_INSTRUCTION);
-        let opts = self.request_options(ARCHIVE_SUMMARY_MAX_TOKENS);
-        self.last_request_at = Some(Instant::now());
-        let resp = self
-            .client
-            .send(&conv, &opts)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(response_text(&resp))
-    }
-
-    async fn summarize_compact(&self) -> Result<String, String> {
-        let user = self.session_transcript_for_summary();
-        let system = ARCHIVE_SUMMARY_SYSTEM.to_string();
-        if let Some(ref fn_) = self.complete_fn {
-            return fn_(system, user);
-        }
-        // Live compact completion via a throwaway conversation.
-        let mut conv = Conversation::new();
-        conv.push_user(user);
-        let opts = RequestOptions {
-            model: self.model.clone(),
-            system: Some(system),
-            max_tokens: Some(256),
-            ..Default::default()
-        };
-        let resp = self
-            .client
-            .send(&conv, &opts)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(response_text(&resp))
-    }
-
-    fn session_transcript_for_summary(&self) -> String {
-        let mut b = String::from("Summarize this coding-agent session in exactly one sentence.\n\n");
-        if self.conv.messages().is_empty() && self.tool_records.is_empty() {
-            b.push_str("(empty session — no user turns yet)\n");
-            return b;
-        }
-        for (i, msg) in self.conv.messages().iter().enumerate() {
-            let role = match msg.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-            };
-            b.push_str(&format!("--- message {i} ({role}) ---\n"));
-            for block in &msg.content {
-                match block {
-                    ContentBlock::Text(t) => {
-                        let text = &t.text;
-                        if text.starts_with("Here is the project's README.md for context:")
-                            || text.starts_with("Here is memory from prior sessions:")
-                        {
-                            b.push_str("[injected context omitted]\n");
-                            continue;
-                        }
-                        let text = if text.len() > 2000 {
-                            format!("{}…", &text[..2000])
-                        } else {
-                            text.clone()
-                        };
-                        b.push_str(&text);
-                        b.push('\n');
-                    }
-                    ContentBlock::ToolUse(t) => {
-                        b.push_str(&format!("[tool_use name={} id={}]\n", t.name, t.id));
-                    }
-                    ContentBlock::ToolResult(t) => {
-                        b.push_str(&format!("[tool_result id={}]\n", t.id));
-                    }
-                    ContentBlock::Reasoning(_) => {}
-                }
-            }
-        }
-        if !self.tool_records.is_empty() {
-            b.push_str(&format!(
-                "\nTool calls this session: {}\n",
-                self.tool_records.len()
-            ));
-            for rec in &self.tool_records {
-                b.push_str(&format!("- {} ({})\n", rec.name, rec.id));
-            }
-        }
-        b
-    }
 }
 
-fn response_text(resp: &Response) -> String {
-    let mut s = String::new();
-    for block in &resp.message.content {
-        if let ContentBlock::Text(t) = block {
-            s.push_str(&t.text);
-        }
+async fn emit_done(events: &mpsc::Sender<AgentEvent>, err: Option<String>, cancelled: bool) {
+    let _ = events
+        .send(AgentEvent::TurnDone { err, cancelled })
+        .await;
+}
+
+async fn cancel_remaining(
+    agent: &mut Agent,
+    tools: &[ToolUseBlock],
+    reason: &str,
+    events: &mpsc::Sender<AgentEvent>,
+) {
+    agent.append_cancelled_tools(tools, reason);
+    emit_done(events, None, true).await;
+}
+
+fn thinking_effort(s: &str) -> ThinkingEffort {
+    match s.trim().to_lowercase().as_str() {
+        "low" => ThinkingEffort::Low,
+        "high" => ThinkingEffort::High,
+        _ => ThinkingEffort::Medium,
     }
-    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::path::Path;
+    use std::time::Duration;
 
     fn write_file(path: &Path, content: &str) {
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p).unwrap();
         }
         std::fs::write(path, content).unwrap();
-    }
-
-    #[test]
-    fn load_host_config_reads_si_config_host_md() {
-        let dir = tempfile::tempdir().unwrap();
-        write_file(
-            &dir.path().join(".si").join("config").join("host.md"),
-            "\n## Host Tools\n\n`rg`, `fd`\n\n",
-        );
-        let got = load_host_config(dir.path()).unwrap();
-        assert_eq!(got, "## Host Tools\n\n`rg`, `fd`");
-        assert!(load_host_config(tempfile::tempdir().unwrap().path()).is_none());
     }
 
     #[test]
@@ -961,101 +551,6 @@ mod tests {
     }
 
     #[test]
-    fn first_turn_readme_then_memory_then_prompt() {
-        let dir = tempfile::tempdir().unwrap();
-        write_file(&dir.path().join("README.md"), "README BODY");
-        write_file(&dir.path().join(".si").join("memory.md"), "MEMORY BODY");
-
-        let got = first_turn_user_texts(dir.path(), "user prompt here");
-        assert_eq!(got.len(), 3, "{got:?}");
-        assert!(got[0].contains("README.md") && got[0].contains("README BODY"), "{}", got[0]);
-        assert!(got[1].contains("memory") && got[1].contains("MEMORY BODY"), "{}", got[1]);
-        assert_eq!(got[2], "user prompt here");
-    }
-
-    #[test]
-    fn first_turn_memory_only() {
-        let dir = tempfile::tempdir().unwrap();
-        write_file(&dir.path().join(".si").join("memory.md"), "only memory");
-        let got = first_turn_user_texts(dir.path(), "hi");
-        assert_eq!(got.len(), 2);
-        assert!(got[0].contains("only memory"));
-        assert_eq!(got[1], "hi");
-    }
-
-    #[test]
-    fn first_turn_neither() {
-        let dir = tempfile::tempdir().unwrap();
-        let got = first_turn_user_texts(dir.path(), "just the prompt");
-        assert_eq!(got, vec!["just the prompt".to_string()]);
-    }
-
-    #[test]
-    fn later_turn_does_not_reinject_context() {
-        let dir = tempfile::tempdir().unwrap();
-        write_file(&dir.path().join("README.md"), "README");
-        write_file(&dir.path().join(".si").join("memory.md"), "MEM");
-
-        let first = assemble_user_message_texts(dir.path(), 0, "first");
-        assert_eq!(first.len(), 3);
-
-        let later = assemble_user_message_texts(dir.path(), 2, "second turn");
-        assert_eq!(later, vec!["second turn".to_string()]);
-    }
-
-    #[test]
-    fn budget_pause_and_continue_stop() {
-        assert!(decide_budget_pause(200_000, DEFAULT_BUDGET));
-        assert!(decide_budget_pause(200_001, DEFAULT_BUDGET));
-        assert!(!decide_budget_pause(199_999, DEFAULT_BUDGET));
-
-        assert_eq!(
-            apply_budget_continue(DEFAULT_BUDGET, true),
-            BudgetDecision::Continue {
-                new_budget: DEFAULT_BUDGET + BUDGET_INCREMENT
-            }
-        );
-        assert_eq!(
-            apply_budget_continue(DEFAULT_BUDGET, false),
-            BudgetDecision::Stop
-        );
-    }
-
-    #[test]
-    fn large_result_approve_deny() {
-        assert!(!is_large_tool_result(50_000));
-        assert!(is_large_tool_result(50_001));
-
-        assert_eq!(
-            decide_large_tool_result(LargeToolResultReply {
-                approve: true,
-                message: String::new(),
-            }),
-            LargeResultDecision::Approve
-        );
-        assert_eq!(
-            decide_large_tool_result(LargeToolResultReply {
-                approve: false,
-                message: "use head".into(),
-            }),
-            LargeResultDecision::Deny {
-                message: "use head".into()
-            }
-        );
-    }
-
-    #[test]
-    fn context_tokens_sums_usage() {
-        let u = Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_creation_input_tokens: 2,
-            cache_read_input_tokens: 3,
-        };
-        assert_eq!(context_tokens(&u), 20);
-    }
-
-    #[test]
     fn prepare_tool_returns_display_without_running() {
         // prepare_tool is the shipped pre-execution step: display is available
         // for ToolStart before any process or filesystem write.
@@ -1083,6 +578,23 @@ mod tests {
         match prepared {
             PreparedTool::Bash { command } => assert_eq!(command, "echo prepare-ok"),
             other => panic!("expected Bash, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prepare_tool_errors() {
+        let a = Agent::new("", tempfile::tempdir().unwrap().path(), "", "");
+        match a.prepare_tool("nope", "{}") {
+            Err(err) => assert!(err.contains("unknown tool"), "{err}"),
+            Ok(_) => panic!("expected unknown tool error"),
+        }
+        match a.prepare_tool("bash", "{not json") {
+            Err(err) => assert!(err.contains("invalid bash input"), "{err}"),
+            Ok(_) => panic!("expected bash decode error"),
+        }
+        match a.prepare_tool("edit_file", "{not json") {
+            Err(err) => assert!(err.contains("invalid edit_file input"), "{err}"),
+            Ok(_) => panic!("expected edit decode error"),
         }
     }
 
@@ -1134,6 +646,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_prepared_bash_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Agent::new("", dir.path(), "", "");
+        let (_display, prepared) = a
+            .prepare_tool("bash", r#"{"command":"echo prepare-exec-ok"}"#)
+            .unwrap();
+        let (_tx, mut cancel) = oneshot::channel::<()>();
+        let (out, is_err) = a
+            .execute_prepared(prepared, &mut cancel)
+            .await
+            .expect("not cancelled");
+        assert!(!is_err, "{out}");
+        assert!(out.contains("prepare-exec-ok"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn execute_prepared_edit_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(&dir.path().join("a.txt"), "alpha\n");
+        let a = Agent::new("", dir.path(), "", "");
+        let (display, prepared) = a
+            .prepare_tool(
+                "edit_file",
+                r#"{"path":"a.txt","old_string":"alpha","new_string":"beta"}"#,
+            )
+            .unwrap();
+        assert_eq!(display, "a.txt (replace)");
+        let (_tx, mut cancel) = oneshot::channel::<()>();
+        let (out, is_err) = a
+            .execute_prepared(prepared, &mut cancel)
+            .await
+            .expect("not cancelled");
+        assert!(!is_err, "{out}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "beta\n"
+        );
+    }
+
+    #[tokio::test]
     async fn execute_prepared_bash_respects_cancel() {
         let a = Agent::new("", tempfile::tempdir().unwrap().path(), "", "");
         let (tx, mut rx) = oneshot::channel();
@@ -1153,56 +705,6 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_tool_bash() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = Agent::new("", dir.path(), "", "");
-        let (display, run) = a
-            .dispatch_tool("bash", r#"{"command":"echo dispatch-ok"}"#)
-            .unwrap();
-        assert_eq!(display, "echo dispatch-ok");
-        let (out, is_err) = run();
-        assert!(!is_err, "{out}");
-        assert!(out.contains("dispatch-ok"), "{out}");
-    }
-
-    #[test]
-    fn dispatch_tool_edit_file() {
-        let dir = tempfile::tempdir().unwrap();
-        write_file(&dir.path().join("a.txt"), "alpha\n");
-        let a = Agent::new("", dir.path(), "", "");
-        let (display, run) = a
-            .dispatch_tool(
-                "edit_file",
-                r#"{"path":"a.txt","old_string":"alpha","new_string":"beta"}"#,
-            )
-            .unwrap();
-        assert_eq!(display, "a.txt (replace)");
-        let (out, is_err) = run();
-        assert!(!is_err, "{out}");
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
-            "beta\n"
-        );
-    }
-
-    #[test]
-    fn dispatch_tool_errors() {
-        let a = Agent::new("", tempfile::tempdir().unwrap().path(), "", "");
-        match a.dispatch_tool("nope", "{}") {
-            Err(err) => assert!(err.contains("unknown tool"), "{err}"),
-            Ok(_) => panic!("expected unknown tool error"),
-        }
-        match a.dispatch_tool("bash", "{not json") {
-            Err(err) => assert!(err.contains("invalid bash input"), "{err}"),
-            Ok(_) => panic!("expected bash decode error"),
-        }
-        match a.dispatch_tool("edit_file", "{not json") {
-            Err(err) => assert!(err.contains("invalid edit_file input"), "{err}"),
-            Ok(_) => panic!("expected edit decode error"),
-        }
-    }
-
-    #[test]
     fn record_tool_accumulates() {
         let mut a = Agent::new("", tempfile::tempdir().unwrap().path(), "", "");
         a.record_tool("id1", "bash", r#"{"command":"ls"}"#, "out", false);
@@ -1210,72 +712,5 @@ mod tests {
         assert_eq!(a.tool_records().len(), 2);
         assert_eq!(a.tool_records()[0].id, "id1");
         assert_eq!(a.tool_records()[1].response, "/tmp");
-    }
-
-    #[tokio::test]
-    async fn archive_orchestration_with_stubbed_model() {
-        let dir = tempfile::tempdir().unwrap();
-        write_file(&dir.path().join(".si").join("memory.md"), "old memory line\n");
-
-        let mut a = Agent::new("", dir.path(), "test-model", "");
-        a.record_tool(
-            "call_1",
-            "bash",
-            r#"{"command":"echo hi"}"#,
-            "hi",
-            false,
-        );
-        // Plant session notes for compact summary path.
-        a.session_notes.push("user: list the files".into());
-        a.conv.push_user("list the files");
-
-        let saw = Arc::new(Mutex::new((String::new(), String::new())));
-        let saw2 = saw.clone();
-        const SUMMARY: &str = "User listed repository files with bash.";
-        a.set_complete_fn(Some(Arc::new(move |system, user| {
-            *saw2.lock().unwrap() = (system, user);
-            Ok(SUMMARY.into())
-        })));
-
-        let res = a.archive().await.unwrap();
-        assert_eq!(res.summary, SUMMARY);
-
-        let (sys, user) = saw.lock().unwrap().clone();
-        assert!(!sys.is_empty() && !user.is_empty());
-        assert!(user.contains("list the files"), "{user}");
-
-        let mem = std::fs::read_to_string(&res.memory).unwrap();
-        assert!(mem.contains("old memory line") && mem.contains(SUMMARY), "{mem}");
-        // datetime prefix
-        assert!(mem.lines().any(|l| {
-            l.len() >= 16 && l.contains(SUMMARY) && l.as_bytes()[4] == b'-'
-        }), "{mem}");
-
-        assert!(res.log_dir.exists());
-        let tool_path = res.log_dir.join("tool").join("call_1.md");
-        let body = std::fs::read_to_string(&tool_path).unwrap();
-        assert!(body.contains(r#"{"command":"echo hi"}"#) && body.contains("hi"), "{body}");
-
-        let system_body = std::fs::read_to_string(res.log_dir.join("system-prompt.md")).unwrap();
-        assert!(system_body.contains("# System prompt"), "{system_body}");
-        assert!(
-            system_body.contains("You are running in Silicon"),
-            "{system_body}"
-        );
-
-        let session_body = std::fs::read_to_string(res.log_dir.join("session.md")).unwrap();
-        assert!(session_body.contains("model: test-model"), "{session_body}");
-        assert!(
-            session_body.contains("thinking_effort: medium"),
-            "{session_body}"
-        );
-        assert!(session_body.contains("model_intro:"), "{session_body}");
-
-        let base = res.log_dir.file_name().unwrap().to_string_lossy();
-        let parts: Vec<_> = base.splitn(3, '-').collect();
-        assert!(parts.len() >= 3, "{base}");
-        assert_eq!(parts[0].len(), 8);
-        assert_eq!(parts[1].len(), 6);
-        assert!(base.contains(&super::super::archive::sanitize_dir_name(SUMMARY)));
     }
 }

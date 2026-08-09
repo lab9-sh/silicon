@@ -2,7 +2,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
+
+use time::OffsetDateTime;
 
 use super::events::ToolRecord;
 
@@ -52,10 +54,15 @@ pub fn append_memory(cwd: &Path, now: SystemTime, sentence: &str) -> Result<Path
 
 /// Format a single memory line: `yyyy-mm-dd hh:mm {sentence}` (UTC).
 pub fn format_memory_line(now: SystemTime, sentence: &str) -> String {
-    let dt = utc_parts(now);
+    let dt = OffsetDateTime::from(now);
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02} {}",
-        dt.year, dt.month, dt.day, dt.hour, dt.minute, sentence
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        sentence
     )
 }
 
@@ -258,64 +265,25 @@ pub fn one_sentence(s: &str) -> String {
     s
 }
 
-struct UtcParts {
-    year: i32,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-}
-
-fn utc_parts(now: SystemTime) -> UtcParts {
-    let secs = now
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let days = secs.div_euclid(86_400);
-    let tod = secs.rem_euclid(86_400) as u32;
-    let hour = tod / 3600;
-    let minute = (tod % 3600) / 60;
-    let second = tod % 60;
-    let (year, month, day) = civil_from_days(days);
-    UtcParts {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-    }
-}
-
-/// Howard Hinnant civil_from_days (UTC).
-fn civil_from_days(z: i64) -> (i32, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y as i32, m as u32, d as u32)
-}
-
 fn format_log_stamp(now: SystemTime) -> String {
-    let dt = utc_parts(now);
+    let dt = OffsetDateTime::from(now);
     format!(
         "{:04}{:02}{:02}-{:02}{:02}{:02}",
-        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second()
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use time::{Date, Month, PrimitiveDateTime, Time};
 
-    /// Build a SystemTime for a UTC civil datetime.
+    /// Build a SystemTime for a UTC civil datetime via the `time` crate.
     fn system_time_utc(
         year: i32,
         month: u32,
@@ -324,20 +292,14 @@ mod tests {
         minute: u32,
         second: u32,
     ) -> SystemTime {
-        let days = days_from_civil(year, month, day);
-        let secs =
-            days * 86_400 + (hour as i64) * 3600 + (minute as i64) * 60 + second as i64;
-        UNIX_EPOCH + std::time::Duration::from_secs(secs as u64)
-    }
-
-    fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
-        let y = if m <= 2 { y - 1 } else { y } as i64;
-        let era = if y >= 0 { y } else { y - 399 } / 400;
-        let yoe = (y - era * 400) as u64;
-        let mp = if m > 2 { m - 3 } else { m + 9 } as u64;
-        let doy = (153 * mp + 2) / 5 + d as u64 - 1;
-        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        era * 146_097 + doe as i64 - 719_468
+        let date = Date::from_calendar_date(
+            year,
+            Month::try_from(month as u8).expect("month"),
+            day as u8,
+        )
+        .expect("date");
+        let t = Time::from_hms(hour as u8, minute as u8, second as u8).expect("time");
+        PrimitiveDateTime::new(date, t).assume_utc().into()
     }
 
     fn write_file(path: &Path, content: &str) {

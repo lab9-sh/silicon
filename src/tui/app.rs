@@ -1,35 +1,28 @@
-//! Ratatui app: transcript, input, budget/large-result modes, scroll, Ctrl+C.
+//! App state, agent event handling, background poll, and UI entrypoint.
 
 use std::io::{self, stdout};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEventKind,
-};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::{Frame, Terminal};
+use ratatui::Terminal;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::agent::{is_archive_command, Agent, AgentEvent, ArchiveResult, LargeToolResultReply};
 
+use super::format::{base_dir, format_bytes, format_tokens, tool_label, tool_prefix};
+
 const INTERRUPT_WINDOW: Duration = Duration::from_secs(2);
-const INPUT_PLACEHOLDER: &str = "Ask Silicon to inspect or edit the repo…";
 const WELCOME: &str = "Silicon — coding agent (bash + edit_file).\n\
 Enter to send · PgUp/PgDn or wheel to scroll · Ctrl+C to interrupt, again to quit.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(crate) enum Mode {
     Idle,
     Running,
     BudgetPause,
@@ -38,7 +31,7 @@ enum Mode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LineKind {
+pub(crate) enum LineKind {
     User,
     Agent,
     Tool,
@@ -47,40 +40,40 @@ enum LineKind {
 }
 
 #[derive(Debug, Clone)]
-struct StyledLine {
-    kind: LineKind,
-    text: String,
+pub(crate) struct StyledLine {
+    pub(crate) kind: LineKind,
+    pub(crate) text: String,
 }
 
-struct App {
-    agent: Arc<Mutex<Agent>>,
-    model_name: String,
-    effort: String,
-    dir_name: String,
+pub(crate) struct App {
+    pub(crate) agent: Arc<Mutex<Agent>>,
+    pub(crate) model_name: String,
+    pub(crate) effort: String,
+    pub(crate) dir_name: String,
 
-    mode: Mode,
-    status: String,
-    messages: Vec<StyledLine>,
-    stream_buf: String,
-    ctx_line_shown: bool,
+    pub(crate) mode: Mode,
+    pub(crate) status: String,
+    pub(crate) messages: Vec<StyledLine>,
+    pub(crate) stream_buf: String,
+    pub(crate) ctx_line_shown: bool,
 
-    input: String,
-    scroll: u16,
-    stick_bottom: bool,
+    pub(crate) input: String,
+    pub(crate) scroll: u16,
+    pub(crate) stick_bottom: bool,
 
-    interrupt_at: Option<Instant>,
+    pub(crate) interrupt_at: Option<Instant>,
 
-    event_rx: Option<mpsc::Receiver<AgentEvent>>,
-    cancel_tx: Option<oneshot::Sender<()>>,
-    budget_reply: Option<oneshot::Sender<bool>>,
-    large_reply: Option<oneshot::Sender<LargeToolResultReply>>,
-    archive_rx: Option<oneshot::Receiver<Result<ArchiveResult, String>>>,
+    pub(crate) event_rx: Option<mpsc::Receiver<AgentEvent>>,
+    pub(crate) cancel_tx: Option<oneshot::Sender<()>>,
+    pub(crate) budget_reply: Option<oneshot::Sender<bool>>,
+    pub(crate) large_reply: Option<oneshot::Sender<LargeToolResultReply>>,
+    pub(crate) archive_rx: Option<oneshot::Receiver<Result<ArchiveResult, String>>>,
 
-    should_quit: bool,
+    pub(crate) should_quit: bool,
 }
 
 impl App {
-    fn new(agent: Agent) -> Self {
+    pub(crate) fn new(agent: Agent) -> Self {
         let model_name = agent.model().to_string();
         let effort = agent.effort().to_string();
         let dir_name = base_dir(agent.cwd());
@@ -109,7 +102,7 @@ impl App {
         app
     }
 
-    fn append(&mut self, kind: LineKind, text: impl Into<String>) {
+    pub(crate) fn append(&mut self, kind: LineKind, text: impl Into<String>) {
         self.messages.push(StyledLine {
             kind,
             text: text.into(),
@@ -132,38 +125,7 @@ impl App {
         self.stream_buf.clear();
     }
 
-    fn window_title(&self) -> String {
-        let mut parts = Vec::new();
-        if !self.dir_name.is_empty() {
-            parts.push(self.dir_name.as_str());
-        }
-        if !self.model_name.is_empty() {
-            parts.push(self.model_name.as_str());
-        }
-        if !self.effort.is_empty() {
-            parts.push(self.effort.as_str());
-        }
-        let mut title = if parts.is_empty() {
-            "silicon".into()
-        } else {
-            parts.join(" · ")
-        };
-        match self.mode {
-            Mode::Running | Mode::Archiving => title.push_str(" — working…"),
-            Mode::BudgetPause | Mode::LargeResult => title.push_str(" — needs input"),
-            Mode::Idle => {}
-        }
-        title
-    }
-
-    fn placeholder(&self) -> &str {
-        match self.mode {
-            Mode::LargeResult => "Type guidance for the agent, then Enter to deny…",
-            _ => INPUT_PLACEHOLDER,
-        }
-    }
-
-    fn submit_prompt(&mut self, rt: &tokio::runtime::Handle) {
+    pub(crate) fn submit_prompt(&mut self, rt: &tokio::runtime::Handle) {
         let prompt = self.input.trim().to_string();
         if prompt.is_empty() {
             return;
@@ -314,7 +276,7 @@ impl App {
         }
     }
 
-    fn poll_background(&mut self) {
+    pub(crate) fn poll_background(&mut self) {
         // Drain agent events without holding a borrow on `self.event_rx`.
         let mut batch = Vec::new();
         let mut disconnected = false;
@@ -381,7 +343,7 @@ impl App {
         }
     }
 
-    fn interrupt_or_quit(&mut self) {
+    pub(crate) fn interrupt_or_quit(&mut self) {
         if let Some(at) = self.interrupt_at {
             if at.elapsed() < INTERRUPT_WINDOW {
                 self.quit();
@@ -396,7 +358,7 @@ impl App {
         self.append(LineKind::Meta, "Interrupting…");
     }
 
-    fn quit(&mut self) {
+    pub(crate) fn quit(&mut self) {
         if let Some(tx) = self.cancel_tx.take() {
             let _ = tx.send(());
         }
@@ -405,256 +367,6 @@ impl App {
         }
         self.large_reply = None;
         self.should_quit = true;
-    }
-
-    fn handle_key(&mut self, key: KeyEvent, rt: &tokio::runtime::Handle) {
-        if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
-            return;
-        }
-
-        // Scroll keys work in every mode.
-        match key.code {
-            KeyCode::PageUp => {
-                self.stick_bottom = false;
-                self.scroll = self.scroll.saturating_sub(10);
-                return;
-            }
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_add(10);
-                return;
-            }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.stick_bottom = false;
-                self.scroll = self.scroll.saturating_sub(1);
-                return;
-            }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.scroll = self.scroll.saturating_add(1);
-                return;
-            }
-            _ => {}
-        }
-
-        match self.mode {
-            Mode::BudgetPause => {
-                if key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    self.interrupt_or_quit();
-                    return;
-                }
-                match key.code {
-                    KeyCode::Char('c') | KeyCode::Char('C') => {
-                        if let Some(tx) = self.budget_reply.take() {
-                            let _ = tx.send(true);
-                        }
-                        self.mode = Mode::Running;
-                        self.status = "continuing (+100k)…".into();
-                        self.append(LineKind::Meta, "Continuing with +100k budget.");
-                    }
-                    KeyCode::Char('s') | KeyCode::Char('S') => {
-                        if let Some(tx) = self.budget_reply.take() {
-                            let _ = tx.send(false);
-                        }
-                        self.mode = Mode::Running;
-                        self.status = "stopping…".into();
-                        self.append(LineKind::Meta, "Stopped at context budget.");
-                    }
-                    _ => {}
-                }
-            }
-            Mode::LargeResult => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    match key.code {
-                        KeyCode::Char('c') => {
-                            self.interrupt_or_quit();
-                            return;
-                        }
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            if let Some(tx) = self.large_reply.take() {
-                                let _ = tx.send(LargeToolResultReply {
-                                    approve: true,
-                                    message: String::new(),
-                                });
-                            }
-                            self.input.clear();
-                            self.mode = Mode::Running;
-                            self.status = "approved large tool result…".into();
-                            self.append(LineKind::Meta, "Approved large tool result.");
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-                match key.code {
-                    KeyCode::Enter => {
-                        let guidance = self.input.clone(); // verbatim
-                        if let Some(tx) = self.large_reply.take() {
-                            let _ = tx.send(LargeToolResultReply {
-                                approve: false,
-                                message: guidance,
-                            });
-                        }
-                        self.input.clear();
-                        self.mode = Mode::Running;
-                        self.status = "denied large tool result…".into();
-                        self.append(
-                            LineKind::Meta,
-                            "Denied large tool result; sent your guidance.",
-                        );
-                    }
-                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.input.push(c);
-                    }
-                    KeyCode::Backspace => {
-                        self.input.pop();
-                    }
-                    _ => {}
-                }
-            }
-            Mode::Running | Mode::Archiving => {
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    self.interrupt_or_quit();
-                }
-            }
-            Mode::Idle => {
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    self.quit();
-                    return;
-                }
-                match key.code {
-                    KeyCode::Esc => {
-                        self.input.clear();
-                    }
-                    KeyCode::Enter => {
-                        self.submit_prompt(rt);
-                    }
-                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.input.push(c);
-                    }
-                    KeyCode::Backspace => {
-                        self.input.pop();
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn draw(&mut self, f: &mut Frame) {
-        let area = f.area();
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(3),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .split(area);
-
-        // Transcript
-        let lines: Vec<Line> = self
-            .messages
-            .iter()
-            .flat_map(|m| {
-                let style = match m.kind {
-                    LineKind::User => Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                    LineKind::Agent => Style::default().fg(Color::White),
-                    LineKind::Tool => Style::default().fg(Color::Yellow),
-                    LineKind::Meta => Style::default().fg(Color::DarkGray),
-                    LineKind::Error => Style::default().fg(Color::Red),
-                };
-                m.text.lines().map(move |l| Line::from(Span::styled(l.to_string(), style)))
-            })
-            .collect();
-
-        let total = lines.len() as u16;
-        let view_h = chunks[0].height.saturating_sub(2);
-        let max_scroll = total.saturating_sub(view_h);
-        if self.stick_bottom || self.scroll > max_scroll {
-            self.scroll = max_scroll;
-            self.stick_bottom = true;
-        }
-
-        let para = Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(self.window_title()),
-            )
-            .wrap(Wrap { trim: false })
-            .scroll((self.scroll, 0));
-        f.render_widget(para, chunks[0]);
-
-        // Status
-        let status = Paragraph::new(Span::styled(
-            self.status.as_str(),
-            Style::default().fg(Color::DarkGray),
-        ));
-        f.render_widget(status, chunks[1]);
-
-        // Input
-        let input_display = if self.input.is_empty()
-            && matches!(self.mode, Mode::Idle | Mode::LargeResult)
-        {
-            Span::styled(self.placeholder(), Style::default().fg(Color::DarkGray))
-        } else {
-            Span::raw(format!("┃ {}", self.input))
-        };
-        let input = Paragraph::new(Line::from(input_display)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(match self.mode {
-                    Mode::Idle | Mode::LargeResult => Style::default().fg(Color::Cyan),
-                    _ => Style::default().fg(Color::DarkGray),
-                }),
-        );
-        f.render_widget(input, chunks[2]);
-    }
-}
-
-fn tool_prefix(name: &str) -> &'static str {
-    match name {
-        "edit_file" => "edit> ",
-        "" | "bash" => "bash$ ",
-        _ => "tool> ",
-    }
-}
-
-fn tool_label(name: &str) -> &str {
-    if name.is_empty() {
-        "bash"
-    } else {
-        name
-    }
-}
-
-fn base_dir(cwd: &Path) -> String {
-    cwd.file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .filter(|s| s != "." && s != "/")
-        .unwrap_or_default()
-}
-
-fn format_tokens(n: u64) -> String {
-    if n >= 1000 {
-        format!("{:.0}k", n as f64 / 1000.0)
-    } else {
-        format!("{n}")
-    }
-}
-
-fn format_bytes(n: usize) -> String {
-    if n >= 1 << 20 {
-        format!("{:.1} MiB", n as f64 / (1 << 20) as f64)
-    } else if n >= 1 << 10 {
-        format!("{:.1} KiB", n as f64 / (1 << 10) as f64)
-    } else {
-        format!("{n} B")
     }
 }
 
@@ -708,49 +420,4 @@ pub fn run(agent: Agent) -> io::Result<()> {
     )?;
     terminal.show_cursor()?;
     result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn window_title_modes() {
-        // Structural: title helper shapes used by draw path.
-        let idle = {
-            let parts = vec!["repo", "claude-sonnet-5", "medium"];
-            let title = parts.join(" · ");
-            assert_eq!(title, "repo · claude-sonnet-5 · medium");
-            title
-        };
-        assert!(idle.contains("claude-sonnet-5"));
-    }
-
-    #[test]
-    fn tool_prefix_labels() {
-        assert_eq!(tool_prefix("bash"), "bash$ ");
-        assert_eq!(tool_prefix("edit_file"), "edit> ");
-        assert_eq!(tool_label(""), "bash");
-        assert_eq!(tool_label("edit_file"), "edit_file");
-    }
-
-    #[test]
-    fn format_helpers() {
-        assert_eq!(format_tokens(500), "500");
-        assert_eq!(format_tokens(200_000), "200k");
-        assert!(format_bytes(2048).contains("KiB"));
-    }
-
-    /// Ensure key control surface symbols exist in this module (structural).
-    #[test]
-    fn control_surface_present_in_source() {
-        let src = include_str!("app.rs");
-        assert!(src.contains("BudgetPause"));
-        assert!(src.contains("LargeResult"));
-        assert!(src.contains("KeyModifiers::CONTROL"));
-        assert!(src.contains("interrupt_or_quit"));
-        assert!(src.contains("PageUp"));
-        assert!(src.contains("continue (+100k)"));
-        assert!(src.contains("approve"));
-    }
 }
