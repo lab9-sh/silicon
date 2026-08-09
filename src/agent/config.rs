@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
+/// Initial session context soft-cap (tokens). Raised by [`BUDGET_INCREMENT`] on continue.
+/// Lives for the whole agent process — not reset on each user turn.
 pub const DEFAULT_BUDGET: u64 = 200_000;
+/// How much to raise the session budget when the user continues past a pause.
 pub const BUDGET_INCREMENT: u64 = 100_000;
 pub const DEFAULT_MAX_TOKENS: u32 = 128_000;
 pub const DEFAULT_MODEL: &str = "claude-sonnet-5";

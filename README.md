@@ -13,8 +13,9 @@ inspect and modify a codebase, and presents the conversation in a
 - **Reliable file edits** — unique match (or `replace_all`), empty `old_string`
   creates a new file, no-ops rejected, line-numbered snippets on success.
 - **Streaming TUI** — live model text, tool start/result, and usage status.
-- **Context budget guardrail** — pauses every ~200k context tokens; continue
-  adds +100k, stop ends the turn.
+- **Context budget guardrail** — session soft-cap at ~200k context tokens to
+  limit context fog; continue adds +100k (persists for the session), stop ends
+  the turn so you can start a fresh session with a clean window.
 - **Large tool-result guardrail** — output estimated above ~50k tokens pauses
   for approve (forward raw) or deny (forward your guidance).
 - **Session archiving** — `/archive` summarizes the session, appends to

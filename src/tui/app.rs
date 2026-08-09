@@ -227,7 +227,7 @@ impl App {
                 self.append(
                     LineKind::Meta,
                     format!(
-                        "Context budget reached ({} / {}). Press c to continue (+100k) or s to stop.",
+                        "Session context budget reached ({} / {}). Press c to continue (+100k for this session) or s to stop (start a fresh session for a clean window).",
                         format_tokens(event.context_tokens),
                         format_tokens(event.budget)
                     ),

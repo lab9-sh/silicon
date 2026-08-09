@@ -11,14 +11,14 @@ pub fn context_tokens(u: &Usage) -> u64 {
     u.total_input_tokens() as u64 + u.output_tokens as u64
 }
 
-/// Whether the agent should pause for a budget decision.
+/// Whether the agent should pause for a session context soft-cap decision.
 pub fn decide_budget_pause(ctx_tokens: u64, budget: u64) -> bool {
     ctx_tokens >= budget
 }
 
-/// Apply the user's budget choice. `continue_turn == true` → +100k budget.
-pub fn apply_budget_continue(budget: u64, continue_turn: bool) -> BudgetDecision {
-    if continue_turn {
+/// Apply the user's budget choice. `should_continue == true` → +100k session budget.
+pub fn apply_budget_continue(budget: u64, should_continue: bool) -> BudgetDecision {
+    if should_continue {
         BudgetDecision::Continue {
             new_budget: budget + BUDGET_INCREMENT,
         }

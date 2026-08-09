@@ -48,6 +48,8 @@ pub struct Agent {
     pub(crate) effort: String,
     pub(crate) cwd: PathBuf,
     pub(crate) conv: Conversation,
+    /// Session context soft-cap (starts at [`DEFAULT_BUDGET`]; +100k on continue).
+    /// Not reset per user turn — raised budgets persist until the process ends.
     pub(crate) budget: u64,
     pub(crate) tool_records: Vec<ToolRecord>,
     pub(crate) last_request_at: Option<Instant>,
@@ -197,13 +199,15 @@ The current working directory is: {}"#,
 
     /// Drive one user turn until end_turn, budget stop, cancel, or error.
     /// Events are sent on `events`; the channel is not closed by this method.
+    ///
+    /// Context `budget` is session-scoped (see [`Agent::budget`]): it is not
+    /// reset here. Continue (+100k) from a prior turn still applies.
     pub async fn run_turn(
         &mut self,
         prompt: &str,
         events: mpsc::Sender<AgentEvent>,
         mut cancel: oneshot::Receiver<()>,
     ) {
-        self.budget = DEFAULT_BUDGET;
         let history_len = self.conv.messages().len();
         let parts = assemble_user_message_texts(&self.cwd, history_len, prompt);
         // Hydrogen accepts a single user text blob; join multi-block first turn.
@@ -326,7 +330,8 @@ The current working directory is: {}"#,
                 return;
             }
 
-            // Budget pause before running tools (matches Oxygen order).
+            // Session context soft-cap: pause before tools so the user can
+            // raise the budget (+100k) or stop and start a fresh session.
             if decide_budget_pause(ctx, self.budget) {
                 let (tx, rx) = oneshot::channel();
                 let _ = events
@@ -349,7 +354,7 @@ The current working directory is: {}"#,
                     BudgetDecision::Stop => {
                         self.append_cancelled_tools(
                             &tool_uses,
-                            "cancelled: user stopped at context budget",
+                            "cancelled: user stopped at session context budget",
                         );
                         emit_done(&events, None, false).await;
                         return;
@@ -596,6 +601,29 @@ mod tests {
             Err(err) => assert!(err.contains("invalid edit_file input"), "{err}"),
             Ok(_) => panic!("expected edit decode error"),
         }
+    }
+
+    #[test]
+    fn session_budget_starts_default_and_survives_continue() {
+        // Budget is session-scoped: constructed at DEFAULT_BUDGET, raised by
+        // continue, and not wiped between user turns (run_turn must not reset it).
+        use super::super::config::BUDGET_INCREMENT;
+        use super::super::policy::apply_budget_continue;
+        use super::super::events::BudgetDecision;
+
+        let mut a = Agent::new("", tempfile::tempdir().unwrap().path(), "", "");
+        assert_eq!(a.budget(), DEFAULT_BUDGET);
+
+        match apply_budget_continue(a.budget(), true) {
+            BudgetDecision::Continue { new_budget } => a.budget = new_budget,
+            BudgetDecision::Stop => panic!("expected continue"),
+        }
+        assert_eq!(a.budget(), DEFAULT_BUDGET + BUDGET_INCREMENT);
+
+        // A second "turn boundary" must leave the raised budget intact.
+        let raised = a.budget();
+        assert_eq!(raised, DEFAULT_BUDGET + BUDGET_INCREMENT);
+        assert_eq!(a.budget(), raised);
     }
 
     #[test]

@@ -62,7 +62,7 @@ impl App {
                 }
                 self.mode = Mode::Running;
                 self.status = "continuing (+100k)…".into();
-                self.append(LineKind::Meta, "Continuing with +100k budget.");
+                self.append(LineKind::Meta, "Continuing with +100k session budget.");
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
                 if let Some(tx) = self.budget_reply.take() {
@@ -70,7 +70,10 @@ impl App {
                 }
                 self.mode = Mode::Running;
                 self.status = "stopping…".into();
-                self.append(LineKind::Meta, "Stopped at context budget.");
+                self.append(
+                    LineKind::Meta,
+                    "Stopped at session context budget. Start a new session for a clean window.",
+                );
             }
             _ => {}
         }

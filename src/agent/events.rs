@@ -57,7 +57,7 @@ pub enum AgentEvent {
     ToolStart(ToolStartEvent),
     ToolResult(ToolResultEvent),
     Usage(UsageEvent),
-    /// Context budget reached. Reply via the oneshot: `true` = continue +100k.
+    /// Session context soft-cap reached. Reply via oneshot: `true` = +100k budget.
     BudgetPause {
         event: BudgetPauseEvent,
         reply: oneshot::Sender<bool>,
@@ -76,9 +76,9 @@ pub enum AgentEvent {
 /// Pure outcome of a budget-pause user choice (for unit tests).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BudgetDecision {
-    /// User chose continue: new budget after +increment.
+    /// User chose continue: session budget after +increment (persists across turns).
     Continue { new_budget: u64 },
-    /// User chose stop: end the turn cleanly.
+    /// User chose stop: end the current turn (prefer a fresh session for a clean window).
     Stop,
 }
 
