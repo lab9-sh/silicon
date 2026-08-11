@@ -2,7 +2,9 @@
 
 use std::process::ExitCode;
 
-use silicon::agent::{resolve_effort, resolve_model, Agent};
+use silicon::agent::{
+    resolve_api_key, resolve_effort, resolve_model, resolve_provider, Agent,
+};
 use silicon::tui;
 
 fn main() -> ExitCode {
@@ -29,19 +31,11 @@ fn run() -> Result<(), String> {
         })?;
     }
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if api_key.is_empty() {
-        return Err(
-            "ANTHROPIC_API_KEY is not set (export it or put it in .env)".into(),
-        );
-    }
-
-    let model = resolve_model();
+    let provider = resolve_provider()?;
+    let api_key = resolve_api_key(provider)?;
+    let model = resolve_model(provider);
     let effort = resolve_effort();
-    let agent = Agent::new(&api_key, cwd, &model, &effort);
+    let agent = Agent::new(provider, &api_key, cwd, &model, &effort);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

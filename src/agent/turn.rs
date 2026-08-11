@@ -7,14 +7,13 @@ use std::time::Instant;
 use futures_util::StreamExt;
 use hydrogen::types::ToolUseBlock;
 use hydrogen::{
-    AnthropicConfig, Client, ContentBlock, Conversation, Event, RequestOptions, Response,
-    StopReason, ThinkingEffort, ToolOutput,
+    AnthropicConfig, Client, ContentBlock, Conversation, Event, OpenAiConfig, RequestOptions,
+    Response, StopReason, ThinkingEffort, ToolOutput, XaiConfig,
 };
 use tokio::sync::{mpsc, oneshot};
 
 use super::config::{
-    load_host_config, resolve_model_intro, DEFAULT_BUDGET, DEFAULT_EFFORT, DEFAULT_MAX_TOKENS,
-    DEFAULT_MODEL,
+    load_host_config, resolve_model_intro, Provider, DEFAULT_BUDGET, DEFAULT_EFFORT,
 };
 use super::context::assemble_user_message_texts;
 use super::events::{
@@ -40,11 +39,11 @@ pub enum PreparedTool {
     Edit { input: EditInput },
 }
 
-/// Coding agent driven by hydrogen (Anthropic).
+/// Coding agent driven by hydrogen (Anthropic, OpenAI, or xAI).
 pub struct Agent {
     pub(crate) client: Client,
+    pub(crate) provider: Provider,
     pub(crate) model: String,
-    pub(crate) max_tokens: u32,
     pub(crate) effort: String,
     pub(crate) cwd: PathBuf,
     pub(crate) conv: Conversation,
@@ -57,9 +56,15 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(api_key: &str, cwd: impl Into<PathBuf>, model: &str, effort: &str) -> Self {
+    pub fn new(
+        provider: Provider,
+        api_key: &str,
+        cwd: impl Into<PathBuf>,
+        model: &str,
+        effort: &str,
+    ) -> Self {
         let model = if model.is_empty() {
-            DEFAULT_MODEL.to_string()
+            provider.default_model().to_string()
         } else {
             model.to_string()
         };
@@ -71,11 +76,15 @@ impl Agent {
                 DEFAULT_EFFORT.into()
             }
         };
-        let client = Client::anthropic(AnthropicConfig::new(api_key));
+        let client = match provider {
+            Provider::Anthropic => Client::anthropic(AnthropicConfig::new(api_key)),
+            Provider::OpenAi => Client::openai(OpenAiConfig::new(api_key)),
+            Provider::Xai => Client::xai(XaiConfig::new(api_key)),
+        };
         Self {
             client,
+            provider,
             model,
-            max_tokens: DEFAULT_MAX_TOKENS,
             effort,
             cwd: cwd.into(),
             conv: Conversation::new(),
@@ -91,6 +100,9 @@ impl Agent {
     }
     pub fn cwd(&self) -> &Path {
         &self.cwd
+    }
+    pub fn provider(&self) -> Provider {
+        self.provider
     }
     pub fn model(&self) -> &str {
         &self.model
@@ -140,12 +152,13 @@ The current working directory is: {}"#,
         )
     }
 
-    pub(crate) fn request_options(&self, max_tokens: u32) -> RequestOptions {
+    /// Build turn options. `max_tokens` is left unset so hydrogen applies its
+    /// provider default (and can later specialize by model).
+    pub(crate) fn request_options(&self) -> RequestOptions {
         RequestOptions {
             model: self.model.clone(),
             system: Some(self.system_prompt()),
             tools: session_tools(),
-            max_tokens: Some(max_tokens),
             thinking: Some(thinking_effort(&self.effort)),
             ..Default::default()
         }
@@ -218,7 +231,7 @@ The current working directory is: {}"#,
                 return;
             }
 
-            let opts = self.request_options(self.max_tokens);
+            let opts = self.request_options();
             self.last_request_at = Some(Instant::now());
 
             let stream = match self.client.stream(&self.conv, &opts).await {
@@ -531,7 +544,7 @@ mod tests {
             &dir.path().join(".si").join("config").join("host.md"),
             "## Host Tools\n\n`rg`\n\n## Host Languages\n\nRust 1.97\n",
         );
-        let a = Agent::new("", dir.path(), "", "");
+        let a = Agent::new(Provider::Anthropic, "", dir.path(), "", "");
         let sp = a.system_prompt();
         assert!(sp.contains("rough edges."), "{sp}");
         assert!(sp.contains("## Host Tools") && sp.contains("`rg`"), "{sp}");
@@ -555,7 +568,7 @@ mod tests {
         use super::super::config::DEFAULT_MODEL_INTRO;
 
         let dir = tempfile::tempdir().unwrap();
-        let a = Agent::new("", dir.path(), "", "");
+        let a = Agent::new(Provider::Anthropic, "", dir.path(), "", "");
         let sp = a.system_prompt();
         assert!(sp.contains("rough edges."), "{sp}");
         assert!(!sp.contains("## Host Tools"), "{sp}");
@@ -574,7 +587,7 @@ mod tests {
         // for ToolStart before any process or filesystem write.
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("should-not-exist-yet");
-        let a = Agent::new("", dir.path(), "", "");
+        let a = Agent::new(Provider::Anthropic, "", dir.path(), "", "");
 
         let (display, prepared) = a
             .prepare_tool(
@@ -601,7 +614,7 @@ mod tests {
 
     #[test]
     fn prepare_tool_errors() {
-        let a = Agent::new("", tempfile::tempdir().unwrap().path(), "", "");
+        let a = Agent::new(Provider::Anthropic, "", tempfile::tempdir().unwrap().path(), "", "");
         match a.prepare_tool("nope", "{}") {
             Err(err) => assert!(err.contains("unknown tool"), "{err}"),
             Ok(_) => panic!("expected unknown tool error"),
@@ -624,7 +637,7 @@ mod tests {
         use super::super::policy::apply_budget_continue;
         use super::super::events::BudgetDecision;
 
-        let mut a = Agent::new("", tempfile::tempdir().unwrap().path(), "", "");
+        let mut a = Agent::new(Provider::Anthropic, "", tempfile::tempdir().unwrap().path(), "", "");
         assert_eq!(a.budget(), DEFAULT_BUDGET);
 
         match apply_budget_continue(a.budget(), true) {
@@ -646,7 +659,7 @@ mod tests {
         // the tool mutates the filesystem.
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir.path().join("a.txt"), "alpha\n");
-        let a = Agent::new("", dir.path(), "", "");
+        let a = Agent::new(Provider::Anthropic, "", dir.path(), "", "");
 
         let raw = r#"{"path":"a.txt","old_string":"alpha","new_string":"beta"}"#;
         let (display, prepared) = a.prepare_tool("edit_file", raw).unwrap();
@@ -689,7 +702,7 @@ mod tests {
     #[tokio::test]
     async fn execute_prepared_bash_succeeds() {
         let dir = tempfile::tempdir().unwrap();
-        let a = Agent::new("", dir.path(), "", "");
+        let a = Agent::new(Provider::Anthropic, "", dir.path(), "", "");
         let (_display, prepared) = a
             .prepare_tool("bash", r#"{"command":"echo prepare-exec-ok"}"#)
             .unwrap();
@@ -706,7 +719,7 @@ mod tests {
     async fn execute_prepared_edit_file() {
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir.path().join("a.txt"), "alpha\n");
-        let a = Agent::new("", dir.path(), "", "");
+        let a = Agent::new(Provider::Anthropic, "", dir.path(), "", "");
         let (display, prepared) = a
             .prepare_tool(
                 "edit_file",
@@ -728,14 +741,14 @@ mod tests {
 
     #[tokio::test]
     async fn execute_prepared_bash_respects_cancel() {
-        let a = Agent::new("", tempfile::tempdir().unwrap().path(), "", "");
+        let a = Agent::new(Provider::Anthropic, "", tempfile::tempdir().unwrap().path(), "", "");
         let (tx, mut rx) = oneshot::channel();
         let prepared = PreparedTool::Bash {
             command: "sleep 30".into(),
         };
         let run = tokio::spawn(async move {
             // Need agent cwd inside async — rebuild prepared path via execute on new agent.
-            let a2 = Agent::new("", std::env::temp_dir(), "", "");
+            let a2 = Agent::new(Provider::Anthropic, "", std::env::temp_dir(), "", "");
             a2.execute_prepared(prepared, &mut rx).await
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -747,7 +760,7 @@ mod tests {
 
     #[test]
     fn record_tool_accumulates() {
-        let mut a = Agent::new("", tempfile::tempdir().unwrap().path(), "", "");
+        let mut a = Agent::new(Provider::Anthropic, "", tempfile::tempdir().unwrap().path(), "", "");
         a.record_tool("id1", "bash", r#"{"command":"ls"}"#, "out", false);
         a.record_tool("id2", "bash", r#"{"command":"pwd"}"#, "/tmp", false);
         assert_eq!(a.tool_records().len(), 2);

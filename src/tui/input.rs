@@ -178,7 +178,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let agent = crate::agent::Agent::new("", std::env::temp_dir(), "m", "medium");
+        let agent = crate::agent::Agent::new(crate::agent::Provider::Anthropic, "", std::env::temp_dir(), "m", "medium");
         let mut app = App::new(agent);
         let (tx, _rx) = tokio::sync::oneshot::channel();
         app.mode = Mode::BudgetPause;
@@ -202,7 +202,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let agent = crate::agent::Agent::new("", std::env::temp_dir(), "m", "medium");
+        let agent = crate::agent::Agent::new(crate::agent::Provider::Anthropic, "", std::env::temp_dir(), "m", "medium");
         let mut app = App::new(agent);
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         app.mode = Mode::LargeResult;
@@ -225,7 +225,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let agent = crate::agent::Agent::new("", std::env::temp_dir(), "m", "medium");
+        let agent = crate::agent::Agent::new(crate::agent::Provider::Anthropic, "", std::env::temp_dir(), "m", "medium");
         let mut app = App::new(agent);
         assert_eq!(app.mode, Mode::Idle);
         app.handle_key(key(KeyCode::Char('h'), KeyModifiers::NONE), rt.handle());
@@ -239,7 +239,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let agent = crate::agent::Agent::new("", std::env::temp_dir(), "m", "medium");
+        let agent = crate::agent::Agent::new(crate::agent::Provider::Anthropic, "", std::env::temp_dir(), "m", "medium");
         let mut app = App::new(agent);
         app.scroll = 20;
         app.stick_bottom = true;

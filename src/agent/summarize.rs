@@ -16,7 +16,10 @@ Reply with a single plain sentence only — no quotes, no bullet points, no prea
 const ARCHIVE_SUMMARY_INSTRUCTION: &str = "Summarize this coding-agent session in exactly one sentence, written for your future self as a memory note: what was asked, what you changed, and the outcome.\n\
 Reply with a single plain sentence only — no quotes, no bullet points, no preamble. Do not call any tools.";
 
+/// Output cap for archive summary when reusing session history (tools still
+/// listed; instruction says not to call them). Compact path uses a tighter cap.
 const ARCHIVE_SUMMARY_MAX_TOKENS: u32 = 4096;
+const COMPACT_SUMMARY_MAX_TOKENS: u32 = 256;
 const CACHE_FRESH_WINDOW: Duration = Duration::from_secs(4 * 60);
 
 impl Agent {
@@ -106,7 +109,10 @@ impl Agent {
         // Clone conversation, append instruction, send non-streaming.
         let mut conv = self.conv.clone();
         conv.push_user(ARCHIVE_SUMMARY_INSTRUCTION);
-        let opts = self.request_options(ARCHIVE_SUMMARY_MAX_TOKENS);
+        let opts = RequestOptions {
+            max_tokens: Some(ARCHIVE_SUMMARY_MAX_TOKENS),
+            ..self.request_options()
+        };
         self.last_request_at = Some(Instant::now());
         let resp = self
             .client
@@ -128,7 +134,7 @@ impl Agent {
         let opts = RequestOptions {
             model: self.model.clone(),
             system: Some(system),
-            max_tokens: Some(256),
+            max_tokens: Some(COMPACT_SUMMARY_MAX_TOKENS),
             ..Default::default()
         };
         let resp = self
@@ -205,6 +211,7 @@ fn response_text(resp: &Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::config::Provider;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
@@ -220,7 +227,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir.path().join(".si").join("memory.md"), "old memory line\n");
 
-        let mut a = Agent::new("", dir.path(), "test-model", "");
+        let mut a = Agent::new(Provider::Anthropic, "", dir.path(), "test-model", "");
         a.record_tool(
             "call_1",
             "bash",

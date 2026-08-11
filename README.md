@@ -1,10 +1,10 @@
 # Silicon
 
 Silicon is a minimal, terminal-based coding agent — the Rust port of
-[Oxygen](../oxygen). It gives Claude a `bash` tool and an `edit_file` tool to
+[Oxygen](../oxygen). It gives the model a `bash` tool and an `edit_file` tool to
 inspect and modify a codebase, and presents the conversation in a
 [ratatui](https://ratatui.rs) TUI. Model I/O goes through
-[hydrogen](../hydrogen) (Anthropic adapter).
+[hydrogen](../hydrogen) (Anthropic, OpenAI, or xAI).
 
 ## Features
 
@@ -24,19 +24,21 @@ inspect and modify a codebase, and presents the conversation in a
   (`transcript.md`, including reasoning summaries when hydrogen exposes them),
   tool logs (`tool/{id}.md`), the system prompt (`system-prompt.md`), and
   session settings (`session.md`: model, model intro, thinking effort).
-- **`.env` support** — loads `ANTHROPIC_API_KEY` from a local `.env` when unset.
+- **`.env` support** — loads provider API keys from a local `.env` when unset.
+- **Multi-provider** — Anthropic, OpenAI, or xAI via `SILICON_PROVIDER`.
 
 ## Requirements
 
 - Rust 1.80+ (edition 2021)
 - A sibling checkout of [hydrogen](../hydrogen)
-- An Anthropic API key
+- An API key for your chosen provider (Anthropic, OpenAI, or xAI)
 
 ## Setup
 
 ```bash
 cp .env.example .env
-# edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+# edit .env: set SILICON_PROVIDER and the matching API key
+# e.g. ANTHROPIC_API_KEY=…  or  OPENAI_API_KEY=…  or  XAI_API_KEY=…
 ```
 
 ## Build & Run
@@ -54,10 +56,15 @@ the project you want the agent to work on.
 
 | Env var               | Description                                              | Default            |
 |-----------------------|----------------------------------------------------------|--------------------|
-| `ANTHROPIC_API_KEY`   | Anthropic API key (required)                             | —                  |
-| `SILICON_MODEL`       | Anthropic model ID                                       | `claude-sonnet-5`  |
+| `SILICON_PROVIDER`    | Backend: `anthropic`, `openai`, or `xai`                 | `anthropic`        |
+| `ANTHROPIC_API_KEY`   | Anthropic API key (when provider is anthropic)           | —                  |
+| `OPENAI_API_KEY`      | OpenAI API key (when provider is openai)                 | —                  |
+| `XAI_API_KEY`         | xAI API key (when provider is xai)                       | —                  |
+| `SILICON_MODEL`       | Model ID for the selected provider                       | provider default\* |
 | `SILICON_MODEL_INTRO` | Model identity line for the system prompt                | `You are Si, a coding agent.` |
 | `SILICON_EFFORT`      | Thinking effort: `low`, `medium`, `high`                 | `medium`           |
+
+\* Defaults: `claude-sonnet-5` (anthropic), `gpt-5` (openai), `grok-4` (xai).
 
 Put these in the project `.env` (or export them). **Multi-word values must be
 quoted** — dotenvy rejects unquoted spaces, e.g.
@@ -80,7 +87,7 @@ are optional and loaded at runtime from `.si/config/host.md` when present.
 ## Project layout
 
 ```
-src/main.rs       entry: .env, API key, model/effort, launch TUI
+src/main.rs       entry: .env, provider/API key, model/effort, launch TUI
 src/lib.rs        library root
 src/tools/        bash + edit_file
 src/agent/        hydrogen-backed turn loop, budget/large-result, archive

@@ -14,8 +14,10 @@ pub use archive::{
     write_archive_layout, ArchiveResult, SessionSettings,
 };
 pub use config::{
-    load_host_config, resolve_effort, resolve_model, resolve_model_intro, DEFAULT_BUDGET,
-    DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, DEFAULT_MODEL_INTRO, BUDGET_INCREMENT,
+    load_host_config, resolve_api_key, resolve_effort, resolve_model, resolve_model_intro,
+    resolve_provider, Provider, DEFAULT_BUDGET, DEFAULT_EFFORT, DEFAULT_MODEL,
+    DEFAULT_MODEL_INTRO, DEFAULT_MODEL_OPENAI, DEFAULT_MODEL_XAI, DEFAULT_PROVIDER,
+    BUDGET_INCREMENT,
 };
 pub use context::{assemble_user_message_texts, first_turn_context_blocks};
 pub use events::{
