@@ -56,8 +56,8 @@ pub fn resolve_effort() -> String {
 
 /// Optional host-environment block from `cwd/.si/config/host.md`.
 ///
-/// Injected into the system prompt between the Silicon intro and the
-/// "You are chatting with…" line. Missing or empty files yield `None`.
+/// Injected into the system prompt between the Silicon intro and the cwd line.
+/// Missing or empty files yield `None`.
 pub fn load_host_config(cwd: &Path) -> Option<String> {
     let raw = read_optional_file(&cwd.join(".si").join("config").join("host.md"))?;
     let trimmed = raw.trim();

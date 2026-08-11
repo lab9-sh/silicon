@@ -9,8 +9,9 @@ mod summarize;
 mod turn;
 
 pub use archive::{
-    append_memory, format_session_settings_log, format_system_prompt_log, is_archive_command,
-    one_sentence, sanitize_dir_name, write_archive_layout, ArchiveResult, SessionSettings,
+    append_memory, format_session_settings_log, format_session_transcript,
+    format_system_prompt_log, is_archive_command, one_sentence, sanitize_dir_name,
+    write_archive_layout, ArchiveResult, SessionSettings,
 };
 pub use config::{
     load_host_config, resolve_effort, resolve_model, resolve_model_intro, DEFAULT_BUDGET,

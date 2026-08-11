@@ -25,7 +25,8 @@ impl Agent {
         self.complete_fn = fn_;
     }
 
-    /// Archive: summarize, append memory, write tool logs + session metadata.
+    /// Archive: summarize, append memory, write full transcript + tool logs +
+    /// session metadata.
     pub async fn archive(&mut self) -> Result<ArchiveResult, String> {
         let summary = self.summarize_session().await?;
         let summary = one_sentence(&summary);
@@ -49,6 +50,7 @@ impl Agent {
             Some(system.as_str()),
             first_user.as_deref(),
             &settings,
+            self.conv.messages(),
         )?;
         Ok(ArchiveResult {
             summary,
@@ -270,6 +272,10 @@ mod tests {
             "{session_body}"
         );
         assert!(session_body.contains("model_intro:"), "{session_body}");
+
+        let transcript = std::fs::read_to_string(res.log_dir.join("transcript.md")).unwrap();
+        assert!(transcript.contains("# Session transcript"), "{transcript}");
+        assert!(transcript.contains("list the files"), "{transcript}");
 
         let base = res.log_dir.file_name().unwrap().to_string_lossy();
         let parts: Vec<_> = base.splitn(3, '-').collect();

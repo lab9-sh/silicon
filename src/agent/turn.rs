@@ -524,6 +524,8 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_host_config_when_present() {
+        use super::super::config::DEFAULT_MODEL_INTRO;
+
         let dir = tempfile::tempdir().unwrap();
         write_file(
             &dir.path().join(".si").join("config").join("host.md"),
@@ -534,23 +536,36 @@ mod tests {
         assert!(sp.contains("rough edges."), "{sp}");
         assert!(sp.contains("## Host Tools") && sp.contains("`rg`"), "{sp}");
         assert!(sp.contains("## Host Languages") && sp.contains("Rust 1.97"), "{sp}");
-        assert!(sp.contains("You are chatting with: Randall"), "{sp}");
-        // Host block sits between intro and chatting-with line.
+        // Model intro is runtime-resolved (env or default).
+        let intro = resolve_model_intro();
+        assert!(
+            sp.contains(intro.as_str()) || sp.contains(DEFAULT_MODEL_INTRO),
+            "{sp}"
+        );
+        // Host block sits between Silicon intro and cwd line.
         let rough = sp.find("rough edges.").unwrap();
         let host = sp.find("## Host Tools").unwrap();
-        let chat = sp.find("You are chatting with:").unwrap();
-        assert!(rough < host && host < chat, "{sp}");
+        let cwd = sp.find("The current working directory is:").unwrap();
+        assert!(rough < host && host < cwd, "{sp}");
+        assert!(sp.contains(dir.path().to_str().unwrap()), "{sp}");
     }
 
     #[test]
     fn system_prompt_omits_host_section_when_missing() {
+        use super::super::config::DEFAULT_MODEL_INTRO;
+
         let dir = tempfile::tempdir().unwrap();
         let a = Agent::new("", dir.path(), "", "");
         let sp = a.system_prompt();
         assert!(sp.contains("rough edges."), "{sp}");
         assert!(!sp.contains("## Host Tools"), "{sp}");
         assert!(!sp.contains("## Host Languages"), "{sp}");
-        assert!(sp.contains("You are chatting with: Randall"), "{sp}");
+        let intro = resolve_model_intro();
+        assert!(
+            sp.contains(intro.as_str()) || sp.contains(DEFAULT_MODEL_INTRO),
+            "{sp}"
+        );
+        assert!(sp.contains("The current working directory is:"), "{sp}");
     }
 
     #[test]

@@ -1,9 +1,11 @@
 //! Session archive: memory append, log layout, `/archive` detection.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use hydrogen::{ContentBlock, Message, Role, ToolOutput};
 use time::OffsetDateTime;
 
 use super::events::ToolRecord;
@@ -74,10 +76,12 @@ pub struct SessionSettings {
     pub thinking_effort: String,
 }
 
-/// Create `cwd/.si/logs/{datetime}-{sanitized}/` with tool logs, system prompt,
-/// and session settings.
+/// Create `cwd/.si/logs/{datetime}-{sanitized}/` with tool logs, full transcript,
+/// system prompt, and session settings.
 ///
 /// Layout:
+/// - `transcript.md` — full multi-turn session log (user/assistant text, tool
+///   uses/results, reasoning summaries when hydrogen exposes them)
 /// - `tool/{id}.md` — each tool call
 /// - `system-prompt.md` — system prompt used for the session (or first user
 ///   message if no system prompt is available)
@@ -90,6 +94,7 @@ pub fn write_archive_layout(
     system_prompt: Option<&str>,
     first_user_message: Option<&str>,
     settings: &SessionSettings,
+    messages: &[Message],
 ) -> Result<PathBuf, String> {
     let mut safe = sanitize_dir_name(summary);
     if safe.is_empty() {
@@ -100,6 +105,10 @@ pub fn write_archive_layout(
     let log_dir = cwd.join(".si").join("logs").join(&dir_name);
     let tool_dir = log_dir.join("tool");
     fs::create_dir_all(&tool_dir).map_err(|e| e.to_string())?;
+
+    let transcript_body = format_session_transcript(messages);
+    fs::write(log_dir.join("transcript.md"), transcript_body.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     for rec in records {
         let id = if rec.id.is_empty() {
@@ -120,6 +129,97 @@ pub fn write_archive_layout(
     fs::write(log_dir.join("session.md"), session_body.as_bytes()).map_err(|e| e.to_string())?;
 
     Ok(fs::canonicalize(&log_dir).unwrap_or(log_dir))
+}
+
+/// Human-readable multi-turn transcript of the hydrogen conversation.
+///
+/// Includes every message the model saw or produced: user text (including
+/// first-turn README/memory injection), assistant text, tool uses, tool
+/// results, and reasoning summaries when the provider exposes them via
+/// [`hydrogen::ReasoningBlock::summary`]. Opaque/encrypted reasoning payloads
+/// and redacted thinking blocks (no summary) are noted but not dumped.
+pub fn format_session_transcript(messages: &[Message]) -> String {
+    let mut out = String::from(
+        "# Session transcript\n\n\
+         Full multi-turn log of what the agent saw and did. Use this to review \
+         tool-use patterns, host context that was available, and reasoning \
+         summaries (when the upstream API emitted them).\n\n",
+    );
+    if messages.is_empty() {
+        out.push_str("_(empty session — no messages.)_\n");
+        return out;
+    }
+
+    for (i, msg) in messages.iter().enumerate() {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        };
+        let _ = writeln!(out, "## Message {i} ({role})\n");
+        if msg.content.is_empty() {
+            out.push_str("_(empty message)_\n\n");
+            continue;
+        }
+        for block in &msg.content {
+            match block {
+                ContentBlock::Text(t) => {
+                    out.push_str("### Text\n\n");
+                    out.push_str(t.text.trim_end());
+                    out.push_str("\n\n");
+                }
+                ContentBlock::Reasoning(r) => match r.summary() {
+                    Some(s) if !s.trim().is_empty() => {
+                        out.push_str("### Reasoning summary\n\n");
+                        out.push_str(s.trim_end());
+                        out.push_str("\n\n");
+                    }
+                    _ => {
+                        out.push_str(
+                            "### Reasoning\n\n\
+                             _(no summary available — redacted or provider-private payload only)_\n\n",
+                        );
+                    }
+                },
+                ContentBlock::ToolUse(t) => {
+                    let _ = writeln!(out, "### Tool use: `{}` (`{}`)\n", t.name, t.id);
+                    out.push_str("```json\n");
+                    out.push_str(&pretty_json(&t.input));
+                    out.push_str("\n```\n\n");
+                }
+                ContentBlock::ToolResult(t) => {
+                    let _ = writeln!(out, "### Tool result (`{}`)\n", t.id);
+                    match &t.output {
+                        ToolOutput::Text(s) => {
+                            out.push_str("```\n");
+                            out.push_str(s);
+                            if !s.ends_with('\n') {
+                                out.push('\n');
+                            }
+                            out.push_str("```\n\n");
+                        }
+                        ToolOutput::Json(v) => {
+                            out.push_str("```json\n");
+                            out.push_str(&pretty_json(v));
+                            out.push_str("\n```\n\n");
+                        }
+                        ToolOutput::Error(s) => {
+                            out.push_str("**error**\n\n```\n");
+                            out.push_str(s);
+                            if !s.ends_with('\n') {
+                                out.push('\n');
+                            }
+                            out.push_str("```\n\n");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn pretty_json(v: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
 }
 
 /// Prefer the system prompt; fall back to the first user message when the
@@ -410,6 +510,33 @@ mod tests {
             thinking_effort: "medium".into(),
         };
 
+        use hydrogen::types::{TextBlock, ToolResultBlock, ToolUseBlock};
+
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text(TextBlock::new("list the files"))],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    reasoning_block(Some("I should list the repo root.")),
+                    ContentBlock::ToolUse(ToolUseBlock::new(
+                        "toolu_abc",
+                        "bash",
+                        serde_json::json!({"command": "ls"}),
+                    )),
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult(ToolResultBlock {
+                    id: "toolu_abc".into(),
+                    output: ToolOutput::Text("a.go\nb.go".into()),
+                })],
+            },
+        ];
+
         let log_dir = write_archive_layout(
             dir.path(),
             now,
@@ -418,6 +545,7 @@ mod tests {
             Some("You are running in Silicon."),
             Some("list the files"),
             &settings,
+            &messages,
         )
         .unwrap();
         let base = log_dir.file_name().unwrap().to_string_lossy();
@@ -460,6 +588,86 @@ mod tests {
             session_body.contains("thinking_effort: medium"),
             "{session_body}"
         );
+
+        let transcript = fs::read_to_string(log_dir.join("transcript.md")).unwrap();
+        assert!(transcript.contains("# Session transcript"), "{transcript}");
+        assert!(transcript.contains("list the files"), "{transcript}");
+        assert!(
+            transcript.contains("### Reasoning summary"),
+            "{transcript}"
+        );
+        assert!(
+            transcript.contains("I should list the repo root."),
+            "{transcript}"
+        );
+        assert!(transcript.contains("### Tool use: `bash`"), "{transcript}");
+        assert!(transcript.contains("toolu_abc"), "{transcript}");
+        assert!(transcript.contains("a.go"), "{transcript}");
+    }
+
+    /// Build a Reasoning content block via serde (fields are crate-private).
+    fn reasoning_block(summary: Option<&str>) -> ContentBlock {
+        serde_json::from_value(serde_json::json!({
+            "kind": "reasoning",
+            "provider": "anthropic",
+            "payload": {"type": "thinking", "thinking": summary.unwrap_or("")},
+            "summary": summary,
+        }))
+        .expect("reasoning block")
+    }
+
+    #[test]
+    fn format_session_transcript_covers_blocks_and_missing_summary() {
+        use hydrogen::types::{TextBlock, ToolResultBlock, ToolUseBlock};
+
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text(TextBlock::new("fix a bug in main.rs"))],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    reasoning_block(Some("Check main.rs then run tests.")),
+                    ContentBlock::Text(TextBlock::new("Looking at main.rs.")),
+                    ContentBlock::ToolUse(ToolUseBlock::new(
+                        "t1",
+                        "bash",
+                        serde_json::json!({"command": "cat main.rs"}),
+                    )),
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult(ToolResultBlock {
+                    id: "t1".into(),
+                    output: ToolOutput::Error("exit 1".into()),
+                })],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![reasoning_block(None)],
+            },
+        ];
+        let body = format_session_transcript(&messages);
+        assert!(body.contains("fix a bug in main.rs"), "{body}");
+        assert!(body.contains("### Reasoning summary"), "{body}");
+        assert!(body.contains("Check main.rs then run tests."), "{body}");
+        assert!(body.contains("Looking at main.rs."), "{body}");
+        assert!(body.contains("### Tool use: `bash` (`t1`)"), "{body}");
+        assert!(body.contains("cat main.rs"), "{body}");
+        assert!(body.contains("**error**"), "{body}");
+        assert!(body.contains("exit 1"), "{body}");
+        assert!(
+            body.contains("no summary available"),
+            "redacted/missing summary should be noted: {body}"
+        );
+    }
+
+    #[test]
+    fn format_session_transcript_empty() {
+        let body = format_session_transcript(&[]);
+        assert!(body.contains("empty session"), "{body}");
     }
 
     #[test]
