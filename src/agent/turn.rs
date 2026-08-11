@@ -130,11 +130,9 @@ impl Agent {
         format!(
             r#"
 {}
-You are running in Silicon, an agentic development environment.
-Silicon is a small hobby project built by Randall.
-Silicon may have some rough edges.
+You are running in Silicon, a minimal agentic development environment.
+Silicon is a small hobby project built by Randall and may have some rough edges.
 {}
-You are chatting with: Randall
 The current working directory is: {}"#,
             resolve_model_intro(),
             host,
