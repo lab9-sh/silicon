@@ -64,7 +64,7 @@ the project you want the agent to work on.
 | `SILICON_MODEL_INTRO` | Model identity line for the system prompt                | `You are Si, a coding agent.` |
 | `SILICON_EFFORT`      | Thinking effort: `low`, `medium`, `high`                 | `medium`           |
 
-\* Defaults: `claude-sonnet-5` (anthropic), `gpt-5` (openai), `grok-4` (xai).
+\* Defaults: `claude-sonnet-5` (anthropic), `gpt-5.6-luna` (openai), `grok-build-0.1` (xai).
 
 Put these in the project `.env` (or export them). **Multi-word values must be
 quoted** — dotenvy rejects unquoted spaces, e.g.
