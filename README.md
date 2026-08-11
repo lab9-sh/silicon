@@ -15,7 +15,7 @@ Silicon is a minimal, terminal-based coding agent. It gives the model a `bash` t
 
 ## Requirements
 
-- Rust 1.80+ (edition 2021)
+- Rust 1.85+ (edition 2024)
 - A sibling checkout of [hydrogen](../hydrogen)
 - An API key for your chosen provider (Anthropic, OpenAI, or xAI)
 
