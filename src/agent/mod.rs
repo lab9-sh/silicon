@@ -15,7 +15,7 @@ pub use archive::{
 };
 pub use config::{
     load_host_config, resolve_api_key, resolve_effort, resolve_model, resolve_model_intro,
-    resolve_provider, Provider, DEFAULT_BUDGET, DEFAULT_EFFORT, DEFAULT_MODEL,
+    resolve_provider, Provider, DEFAULT_BUDGET, DEFAULT_EFFORT, DEFAULT_MODEL_ANTHROPIC,
     DEFAULT_MODEL_INTRO, DEFAULT_MODEL_OPENAI, DEFAULT_MODEL_XAI, DEFAULT_PROVIDER,
     BUDGET_INCREMENT,
 };

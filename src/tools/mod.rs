@@ -37,31 +37,28 @@ pub fn bash_tool_def() -> ToolDef {
 pub fn edit_tool_def() -> ToolDef {
     ToolDef {
         name: "edit_file".into(),
-        description: "Edit a file by exact string replacement, or create a new file. \
-            Prefer this over bash heredocs/sed for file edits. \
-            old_string must match the file exactly (including whitespace and indentation) \
-            and must be unique unless replace_all is true; include a few surrounding lines \
-            to disambiguate. Leave old_string empty to create a new file with new_string as \
-            its contents. To delete text, pass an empty new_string."
+        description: "Edit or create a file. old_string must be unique unless replace_all is set to true.
+            Disambiguate old_string with a few surrounding lines of text to make unique.\
+            Leave old_string empty to create a new file. Leave new_string empty to delete text."
             .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path, absolute or relative to the working directory."
+                    "description": "Absolute or relative file path."
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "Exact text to replace. Empty means create a new file."
+                    "description": "Text to replace, including whitespace and indentation."
                 },
                 "new_string": {
                     "type": "string",
-                    "description": "Replacement text (or the full contents of a new file)."
+                    "description": "Replacement text."
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": "Replace every occurrence of old_string instead of requiring a unique match."
+                    "description": "Set to true when old_string is not unique."
                 }
             },
             "required": ["path", "old_string", "new_string"]

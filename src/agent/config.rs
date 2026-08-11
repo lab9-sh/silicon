@@ -7,8 +7,7 @@ use std::path::Path;
 pub const DEFAULT_BUDGET: u64 = 200_000;
 /// How much to raise the session budget when the user continues past a pause.
 pub const BUDGET_INCREMENT: u64 = 100_000;
-/// Default Anthropic model when `SILICON_PROVIDER` is unset or `anthropic`.
-pub const DEFAULT_MODEL: &str = "claude-sonnet-5";
+pub const DEFAULT_MODEL_ANTHROPIC: &str = "claude-sonnet-5";
 pub const DEFAULT_MODEL_OPENAI: &str = "gpt-5.6-luna";
 pub const DEFAULT_MODEL_XAI: &str = "grok-build-0.1";
 pub const DEFAULT_EFFORT: &str = "medium";
@@ -46,7 +45,7 @@ impl Provider {
     /// Default `SILICON_MODEL` when unset for this provider.
     pub fn default_model(self) -> &'static str {
         match self {
-            Self::Anthropic => DEFAULT_MODEL,
+            Self::Anthropic => DEFAULT_MODEL_ANTHROPIC,
             Self::OpenAi => DEFAULT_MODEL_OPENAI,
             Self::Xai => DEFAULT_MODEL_XAI,
         }
@@ -185,12 +184,12 @@ mod tests {
         let _ = resolve_model(Provider::Anthropic);
         let _ = resolve_model_intro();
         let _ = resolve_effort();
-        assert_eq!(DEFAULT_MODEL, "claude-sonnet-5");
+        assert_eq!(DEFAULT_MODEL_ANTHROPIC, "claude-sonnet-5");
         assert_eq!(DEFAULT_MODEL_OPENAI, "gpt-5.6-luna");
         assert_eq!(DEFAULT_MODEL_XAI, "grok-build-0.1");
         assert_eq!(DEFAULT_EFFORT, "medium");
         assert!(!DEFAULT_MODEL_INTRO.is_empty());
-        assert_eq!(Provider::Anthropic.default_model(), DEFAULT_MODEL);
+        assert_eq!(Provider::Anthropic.default_model(), DEFAULT_MODEL_ANTHROPIC);
         assert_eq!(Provider::OpenAi.default_model(), DEFAULT_MODEL_OPENAI);
         assert_eq!(Provider::Xai.default_model(), DEFAULT_MODEL_XAI);
     }

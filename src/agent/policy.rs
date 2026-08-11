@@ -6,7 +6,7 @@ use super::config::BUDGET_INCREMENT;
 use super::events::{BudgetDecision, LargeResultDecision, LargeToolResultReply};
 use crate::tools::LARGE_TOOL_RESULT_TOKENS;
 
-/// Total context-window tokens from a hydrogen usage report (matches Oxygen).
+/// Total context-window tokens from a hydrogen usage report.
 pub fn context_tokens(u: &Usage) -> u64 {
     u.total_input_tokens() as u64 + u.output_tokens as u64
 }

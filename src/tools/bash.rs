@@ -9,7 +9,6 @@ use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-/// Default command timeout (matches Oxygen).
 pub const BASH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Estimated-token threshold above which the agent pauses for user approval
@@ -91,7 +90,6 @@ pub async fn run_bash_cancellable(
         let _ = (r1, r2);
         let mut combined = out_buf;
         combined.extend_from_slice(&err_buf);
-        // Lossy UTF-8 matches Oxygen's invalid-utf8 → rune conversion intent.
         String::from_utf8_lossy(&combined).into_owned()
     };
 

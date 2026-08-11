@@ -210,9 +210,6 @@ The current working directory is: {}"#,
 
     /// Drive one user turn until end_turn, budget stop, cancel, or error.
     /// Events are sent on `events`; the channel is not closed by this method.
-    ///
-    /// Context `budget` is session-scoped (see [`Agent::budget`]): it is not
-    /// reset here. Continue (+100k) from a prior turn still applies.
     pub async fn run_turn(
         &mut self,
         prompt: &str,
