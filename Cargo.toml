@@ -2,7 +2,7 @@
 name = "silicon"
 version = "0.1.0"
 edition = "2021"
-description = "Terminal coding agent — Rust port of Oxygen (ratatui + hydrogen)"
+description = "Silicon is a minimal, terminal-based coding agent (ratatui + hydrogen)"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/lab9-sh/silicon"
