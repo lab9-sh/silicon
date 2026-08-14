@@ -20,7 +20,7 @@ path = "src/lib.rs"
 crossterm = "0.28"
 dotenvy = "0.15"
 futures-util = "0.3"
-hydrogen = { path = "../hydrogen" }
+hydrogen = { git = "https://github.com/lab9-sh/hydrogen", tag = "v0.1.0" }
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

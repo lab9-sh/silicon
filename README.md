@@ -1,6 +1,6 @@
 # Silicon
 
-Silicon is a minimal, terminal-based coding agent. It gives the model a `bash` tool and an `edit_file` tool to inspect and modify a codebase, and presents the conversation in a [ratatui](https://ratatui.rs) TUI. Model I/O goes through [hydrogen](../hydrogen) (Anthropic, OpenAI, or xAI).
+Silicon is a minimal, terminal-based coding agent. It gives the model a `bash` tool and an `edit_file` tool to inspect and modify a codebase, and presents the conversation in a [ratatui](https://ratatui.rs) TUI. Model I/O goes through [hydrogen](https://github.com/lab9-sh/hydrogen) (Anthropic, OpenAI, or xAI).
 
 ## Features
 
@@ -16,7 +16,6 @@ Silicon is a minimal, terminal-based coding agent. It gives the model a `bash` t
 ## Requirements
 
 - Rust 1.85+ (edition 2024)
-- A sibling checkout of [hydrogen](../hydrogen)
 - An API key for your chosen provider (Anthropic, OpenAI, or xAI)
 
 ## Setup
